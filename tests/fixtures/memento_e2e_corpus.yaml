@@ -1,0 +1,205 @@
+# Shared corpus for the manual stress test (scripts/test_memento_tool.py)
+# and the integration tests (tests/integration/test_memento_e2e.py).
+sessions:
+  - num: 1
+    title: Acme onboarding — SAML SSO
+    turns:
+      - role: user
+        content: "Onboarding doc for the Acme account. Their auth setup is unusual."
+      - role: assistant
+        content: "Documented Acme onboarding. Customer Acme uses self-hosted SSO via SAML 2.0. Their IdP is at sso.acme.example. Acme requires SP-initiated flow only. Session timeout is 4 hours. No SCIM provisioning — users are JIT-created on first login."
+  - num: 2
+    title: Cache decision — Redis
+    turns:
+      - role: user
+        content: "We need a cache layer for the product catalog API. Read latency is too high."
+      - role: assistant
+        content: "Decision: cache layer = Redis. Rationale: low latency, already operated by SRE, supports cluster mode. Will implement Redis-backed cache for catalog reads with 5-minute TTL."
+  - num: 3
+    title: Cache implementation — Redis live
+    turns:
+      - role: user
+        content: "Implement the Redis caching for the catalog API per last week's decision."
+      - role: assistant
+        content: "Implemented in src/cache/redis_client.ts. 5-minute TTL on catalog reads. Hit ratio 78%. Connection pooling configured for the existing Redis cluster. Catalog read p99 dropped from 320ms to 45ms after staging deploy."
+  - num: 4
+    title: Frontend hover bug on iOS Safari
+    turns:
+      - role: user
+        content: "The 'Buy now' button on the product page has no hover state on Safari iOS."
+      - role: assistant
+        content: "Fixed by adding an :active state with a 0.95 scale transform and a darker shade. Updated src/components/BuyButton.css. Visual feedback now matches Android."
+  - num: 5
+    title: K8s eviction fix
+    turns:
+      - role: user
+        content: "K8s evicted three pods overnight on the prod-east cluster. Memory pressure on node-7."
+      - role: assistant
+        content: "node-7 had a noisy neighbor (analytics batch job) with no memory limit. Added resourceQuota: requests.memory=8Gi, limits.memory=12Gi. Set evictionHard.memory.available=500Mi on the kubelet config. No further evictions."
+  - num: 6
+    title: Spring email template review
+    turns:
+      - role: user
+        content: "Marketing wants to send the spring launch email. Can you review the template?"
+      - role: assistant
+        content: "Subject 'Don't miss out!!' triggered Gmail spam scores; replaced with 'Spring 2026 collection — 20% off through Sunday'. Raised CTA contrast from 3.1:1 to 4.6:1. Added plain-text fallback."
+  - num: 7
+    title: Acme MFA addition
+    turns:
+      - role: user
+        content: "Acme just sent over a security update — they want MFA on all integration users."
+      - role: assistant
+        content: "Acme onboarding update: TOTP via Authenticator app required. Configured the SP to enforce MFA on the Acme tenant. Updated Acme onboarding doc to note 2FA is mandatory."
+  - num: 8
+    title: Cache decision reversal — Postgres MV
+    turns:
+      - role: user
+        content: "Production Redis OOMed twice this week. We need to revisit the caching decision."
+      - role: assistant
+        content: "Catalog payloads grew 4x after the SKU expansion. Redis 8GB nodes can't hold the working set. Decision: replace Redis cache with a Postgres materialized view. This supersedes the earlier Redis decision. Reads stay sub-50ms via index hits, storage scales with the table, no separate ops surface."
+  - num: 9
+    title: Analytics DB choice — PostgreSQL
+    turns:
+      - role: user
+        content: "We need to pick the primary database for the new analytics service."
+      - role: assistant
+        content: "Decision: primary database for analytics = PostgreSQL. Mature, strong consistency, JSONB support, excellent index coverage. Will draft the analytics schema next."
+  - num: 10
+    title: Analytics DB switch — MySQL
+    turns:
+      - role: user
+        content: "Re-evaluating the analytics database. MySQL has better query parallelism for our workload."
+      - role: assistant
+        content: "Decision change: switch the analytics database from PostgreSQL to MySQL. Existing MySQL operational tooling is more mature. The earlier PostgreSQL decision is superseded. Begin migration plan."
+  - num: 11
+    title: Analytics DB revert — back to PostgreSQL
+    turns:
+      - role: user
+        content: "MySQL migration is hitting performance walls. Window functions over 50M rows are 8x slower than the Postgres prototype."
+      - role: assistant
+        content: "MySQL window function planner doesn't handle our top-decile cohort queries well. Decision: revert the analytics database back to PostgreSQL. The MySQL choice is superseded; performance overrides operational tooling familiarity."
+  - num: 12
+    title: Testing standards — Pytest, real Postgres, ruff
+    turns:
+      - role: user
+        content: "Quick chat about coding standards for our team."
+      - role: assistant
+        content: "Recorded preferences: testing framework = Pytest (not unittest); database in tests = real Postgres via testcontainers (no mocks); linter/formatter = ruff (not flake8 + black). I'll apply these going forward."
+  - num: 13
+    title: Service constants — orders-api
+    turns:
+      - role: user
+        content: "Document the auth and network constants for orders-api."
+      - role: assistant
+        content: "Service orders-api: API key rotates every 90 days. Production listens on port 8745. Staging listens on port 8746. Internal mTLS certificate is valid 365 days, auto-rotated 30 days before expiry. Backend timeout is 12000ms."
+  - num: 14
+    title: Bastion config — eu-west-3
+    turns:
+      - role: user
+        content: "Configure the SSH bastion settings for the new region eu-west-3."
+      - role: assistant
+        content: "Bastion configured for eu-west-3. SSH timeout is 12 minutes. Max retries = 3. Allowed source CIDR: 10.42.0.0/16. Bastion host: bastion.eu-west-3.internal. Audit logs ship to S3 bucket bastion-audit-eu-west-3 with 7-year retention."
+  - num: 15
+    title: Search ranker tuning
+    turns:
+      - role: user
+        content: "Fix the search ranking weights — recent items aren't surfacing."
+      - role: assistant
+        content: "Tuned recency boost in src/search/ranker.ts: increased recency_weight from 0.15 to 0.30 and shortened the half-life from 30 to 14 days. A/B test running with 5% traffic."
+  - num: 16
+    title: Node 18 to 22 upgrade
+    turns:
+      - role: user
+        content: "Upgrade Node from 18 to 22 across all services."
+      - role: assistant
+        content: "Upgraded 14 services to Node 22.3.0. Three required changes: replaced deprecated 'punycode' with 'punycode/'; updated AWS SDK v2 calls in legacy-shipping; bumped jest to 29.7 for ESM support."
+  - num: 17
+    title: Flaky CI fix
+    turns:
+      - role: user
+        content: "Investigate flaky CI on the integration suite."
+      - role: assistant
+        content: "Three flaky tests traced to clock-dependent assertions. Replaced Date.now() with an injectable Clock and pinned test time. CI green for 12 runs straight."
+  - num: 18
+    title: Q1 retro action items
+    turns:
+      - role: user
+        content: "Q1 retro action items follow-up."
+      - role: assistant
+        content: "Closed 7 of 9 retro items. Remaining: document the on-call escalation matrix, and standardize feature-flag naming. Both assigned to platform team."
+  - num: 19
+    title: Pricing engine refactor
+    turns:
+      - role: user
+        content: "Refactor the billing module to use the new pricing engine."
+      - role: assistant
+        content: "Refactored src/billing/* to call the pricing-engine RPC. Old hardcoded tier table removed. Migration script populates pricing_engine_id for existing subscriptions."
+  - num: 20
+    title: Ingestion alerts
+    turns:
+      - role: user
+        content: "Set up alerting for the new ingestion pipeline."
+      - role: assistant
+        content: "Added Prometheus alerts for ingestion-lag > 5min, error-rate > 1%, queue-depth > 10000. Routed to the data-platform PagerDuty schedule."
+  - num: 21
+    title: Acme dashboard URL
+    turns:
+      - role: user
+        content: "Point Acme to their dashboard."
+      - role: assistant
+        content: "Acme's dashboard URL is acme.dash.internal/v2. Authentication is via the same SAML SSO. Dashboard supports SSO group to dashboard role mapping."
+  - num: 22
+    title: search_ranker_v2 feature flag
+    turns:
+      - role: user
+        content: "Add a feature flag for the experimental search ranker."
+      - role: assistant
+        content: "Added flag 'search_ranker_v2' to the LaunchDarkly config. Default off. Wired into src/search/index.ts behind a feature-gate check."
+
+queries:
+  - id: q1
+    query: "How does customer Acme authenticate their users?"
+    expected_in_topk: [1, 7]
+    must_hit: [1]
+    tier: strict
+  - id: q2
+    query: "What is Acme's IdP URL?"
+    expected_top1: 1
+    tier: strict
+  - id: q3
+    query: "What is our current cache layer for the catalog API?"
+    expected_top1: 8
+    must_not_be_top1: [2, 3]
+    tier: strict
+  - id: q4
+    query: "Why did we change the cache technology?"
+    expected_in_topk: [8, 2]
+    must_hit: [8]
+    tier: lenient
+  - id: q5
+    query: "What is the current primary database for the analytics service?"
+    expected_top1: 11
+    must_not_be_top1: [10]
+    tier: strict
+  - id: q6
+    query: "What test framework should I use for new Python tests?"
+    must_hit: [12]
+    tier: lenient
+  - id: q7
+    query: "What port does orders-api run on in production?"
+    must_hit: [13]
+    must_appear_in_context: ["8745"]
+    tier: strict
+  - id: q8
+    query: "What is the SSH timeout in the eu-west-3 bastion?"
+    must_hit: [14]
+    must_appear_in_context: ["12 minutes"]
+    tier: strict
+  - id: q9
+    query: "What was the latest frontend issue on the product page?"
+    must_hit: [4]
+    tier: lenient
+  - id: q10
+    query: "How did we fix K8s pod evictions?"
+    must_hit: [5]
+    tier: lenient
