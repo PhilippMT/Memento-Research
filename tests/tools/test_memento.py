@@ -270,8 +270,10 @@ def test_recall_top_k_clamps(employee_root, fake_vessel, monkeypatch):
     )
 
     with _with_vessel(fake_vessel):
+        # User top_k=0 -> clamped to 1; adapter retrieves at least 10 candidates.
         memento_mod.recall.invoke({"query": "q", "top_k": 0})
-        assert captured["top_k"] == 1
+        assert captured["top_k"] == 10
+        # User top_k=999 -> clamped to 20; adapter still retrieves 20.
         memento_mod.recall.invoke({"query": "q", "top_k": 999})
         assert captured["top_k"] == 20
 

@@ -261,9 +261,12 @@ def recall(query: str, top_k: int = 5) -> dict:
 
     from onemancompany.core.memory import AblationFlags
 
+    # Use a broad retrieval window (>= 10) so the adapter's BFS seed pool
+    # is large enough; trim returned ids to the caller's requested top_k.
+    retrieve_k = max(top_k_int, 10)
     adapter = MemoryV4Adapter(
         memory_root=mem_root,
-        top_k=top_k_int,
+        top_k=retrieve_k,
         ablation=AblationFlags(reflect_synthesis=False),
     )
     conv = _build_conversation(sessions_dir, employee_id)
@@ -274,9 +277,10 @@ def recall(query: str, top_k: int = 5) -> dict:
         logger.exception("[memento] recall failed for {}: {}", employee_id, exc)
         return {"status": "error", "message": f"recall failed: {exc}"}
 
+    sids = list(ctx.session_ids or [])[:top_k_int]
     return {
         "status": "ok",
         "query": query,
         "context": ctx.raw_text or "(no relevant sessions)",
-        "session_ids": list(ctx.session_ids or []),
+        "session_ids": sids,
     }
