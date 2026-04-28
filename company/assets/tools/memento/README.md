@@ -210,12 +210,108 @@ employee from your own code, set the ContextVar yourself (the
 
 ## Tests
 
-- Unit: `tests/tools/test_memento.py` — 14 tests, no LLM, fully
-  patched adapter.
-- Integration: `tests/integration/test_memento_e2e.py` — 3 tests,
-  real LLM, auto-skipped without `OPENROUTER_API_KEY`.
-- Stress: `scripts/test_memento_tool.py` — 22-session corpus,
-  10 retrieval queries, runs `store`/`recall` directly.
-- Agentic: `scripts/test_memento_agent.py` — 2-task LLM-driven
-  scenario; `scripts/test_memento_agent_corpus.py` — 22-session
-  corpus + 6 LLM-driven recall queries with verbatim assertions.
+Four test layers cover plumbing, retrieval quality, and live
+LLM-driven invocation.
+
+### Unit — `tests/tools/test_memento.py` (14 tests)
+
+No LLM, no network. Patches `MemoryV4Adapter` to avoid real
+finalize calls. Covers:
+
+- employee-context resolution (both tools error without a vessel)
+- `store` validation (empty / non-list / missing role / invalid role)
+- `store` happy path (writes session JSON, calls ingest)
+- `store` session_num auto-increment (1 → 2 → 3 → 001/002/003.json)
+- `recall` happy path + empty-memory short-circuit + `top_k` clamp
+  (1 ≤ top_k ≤ 20) + empty-query rejection
+- cross-employee isolation (E00006 store invisible to E00007)
+- finalize-failure preserves the on-disk transcript
+
+Run: `pytest tests/tools/test_memento.py -v` — **14 / 14 pass**, ~3s.
+
+### Integration — `tests/integration/test_memento_e2e.py` (3 tests)
+
+Hits a real LLM via the OpenAI-compatible endpoint. Auto-skipped
+without `OPENROUTER_API_KEY`. Covers:
+
+- verbatim quote preservation through finalize (`8745` reaches
+  recall context)
+- 3-session supersede chain (PG → MySQL → PG): latest stored
+  session ranks top-1
+- two-employee isolation under live LLM tool use
+
+Run with:
+```bash
+OPENROUTER_API_KEY=sk-... \
+OPENROUTER_BASE_URL=https://app.ppapi.ai/v1 \
+MEMENTO_MODEL=gemini-3-flash-preview \
+pytest tests/integration/test_memento_e2e.py -v
+```
+
+### Stress — `scripts/test_memento_tool.py`
+
+Direct `.invoke()` calls (no LLM agent on the call path; LLM only
+runs inside `store`'s finalize). Plants the 22-session corpus from
+`tests/fixtures/memento_e2e_corpus.yaml`, then issues 10 retrieval
+queries and scores each against expected session ids and verbatim
+substrings.
+
+Last run on ppapi `gemini-3-flash-preview`:
+```
+Corpus: 22 sessions ingested in 48.1s
+Storage: 58.0 KB on disk
+Score: 7/10  (strict failures: 3)
+Isolation check (E00006 vs E00007): PASS
+Overall: PASS
+```
+
+The three strict failures (`q2`, `q3`, `q5`) all depend on the
+memento_v4 supersede sidecar being populated by the upstream
+finalize prompt — currently empty on short corpora, so latest
+decisions don't outrank earlier ones in the ranking. Documented as
+a phase-1 known limitation; vector + BM25 still surface the right
+session in top-3 for every query.
+
+### Agentic — `scripts/test_memento_agent*.py`
+
+Real LangGraph react agent loop (`create_react_agent` + LLM tool
+calling — same path `BaseAgentRunner` uses). The agent autonomously
+decides when to call `store` and `recall`; nothing in the call path
+is hard-coded.
+
+**Two-task smoke** (`test_memento_agent.py`):
+
+| Task | What it tests | Result |
+|---|---|---|
+| A. "Document Acme onboarding…" | agent emits `store` tool_call, session lands on disk | PASS |
+| B. "What auth does Acme use?" | agent emits `recall` tool_call, answer quotes `SAML 2.0` + `sso.acme.example` | PASS |
+| C. (same Q on EMP-OTHER) | recall returns "(no prior sessions)", no leak | PASS |
+
+6/6 checks pass, ~78s wall-clock.
+
+**22-session corpus** (`test_memento_agent_corpus.py`):
+
+Phase 1 deterministically pre-loads the full 22-session corpus.
+Phase 2 hands the agent six factual questions with `top_k=3` and
+verifies the target session lands in the top-3 *and* the agent's
+final answer contains the verbatim ground-truth value.
+
+| # | Question | Target | Top-3 returned | Verbatim hit |
+|---|---|---|---|---|
+| 1 | orders-api production port | sess13 | [13, 8, 20] | `8745` |
+| 2 | eu-west-3 bastion SSH timeout | sess14 | [14, 13, 1] | `12 minutes` |
+| 3 | Python test framework | sess12 | [12, 17, 15] | `Pytest` |
+| 4 | Acme user authentication | sess1 | [21, 1, 7] | `SAML 2.0` + `sso.acme.example` |
+| 5 | iOS Safari hover bug fix | sess4 | [4, 22, 15] | `:active` |
+| 6 | K8s eviction resolution | sess5 | [5, 8, 14] | `noisy neighbor` |
+|   | **isolation** (EMP-OTHER) | — | `[]` | "(no prior sessions)", no leak |
+
+Result: **6/6 factual + isolation PASS**. Five queries land target
+at top-1; query #4 lands target at top-2 because both Acme-related
+sessions are equally relevant (sess21 is the Acme dashboard URL —
+acceptable noise, the agent still quotes the SAML facts from
+sess1 verbatim).
+
+Per-query latency on ppapi `gemini-3-flash-preview`: ~100-130s
+(includes one LLM call to plan the recall + one to compose the
+final answer; the recall tool itself is local, sub-second).
