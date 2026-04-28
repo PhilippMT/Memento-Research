@@ -240,4 +240,43 @@ def recall(query: str, top_k: int = 5) -> dict:
     except RuntimeError as exc:
         return {"status": "error", "message": str(exc)}
 
-    return {"status": "error", "message": "not implemented yet"}
+    if not isinstance(query, str) or not query.strip():
+        return {"status": "error", "message": "query required (non-empty string)"}
+
+    try:
+        top_k_int = int(top_k)
+    except (TypeError, ValueError):
+        top_k_int = 5
+    top_k_int = max(1, min(20, top_k_int))
+
+    mem_root, sessions_dir = _employee_memory_dirs(employee_id)
+
+    if not any(sessions_dir.glob("*.json")):
+        return {
+            "status": "ok",
+            "query": query,
+            "context": "(no prior sessions)",
+            "session_ids": [],
+        }
+
+    from onemancompany.core.memory import AblationFlags
+
+    adapter = MemoryV4Adapter(
+        memory_root=mem_root,
+        top_k=top_k_int,
+        ablation=AblationFlags(reflect_synthesis=False),
+    )
+    conv = _build_conversation(sessions_dir, employee_id)
+
+    try:
+        ctx = asyncio.run(_run_recall(adapter, conv, employee_id, query))
+    except Exception as exc:
+        logger.exception("[memento] recall failed for {}: {}", employee_id, exc)
+        return {"status": "error", "message": f"recall failed: {exc}"}
+
+    return {
+        "status": "ok",
+        "query": query,
+        "context": ctx.raw_text or "(no relevant sessions)",
+        "session_ids": list(ctx.session_ids or []),
+    }

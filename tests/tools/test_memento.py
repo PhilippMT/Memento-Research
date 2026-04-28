@@ -182,3 +182,105 @@ def test_store_increments_session_num(employee_root, fake_vessel, monkeypatch):
     sessions_dir = employee_root / "E00006" / "memory" / "sessions"
     written = sorted(p.name for p in sessions_dir.glob("*.json"))
     assert written == ["001.json", "002.json", "003.json"]
+
+
+def test_recall_empty_memory(employee_root, fake_vessel):
+    from company.assets.tools.memento import memento as memento_mod
+
+    with _with_vessel(fake_vessel):
+        result = memento_mod.recall.invoke({"query": "anything"})
+
+    assert result["status"] == "ok"
+    assert "no prior sessions" in result["context"].lower()
+    assert result["session_ids"] == []
+
+
+def test_recall_after_store_returns_context(employee_root, fake_vessel, monkeypatch):
+    """recall returns the patched RecallContext from the adapter."""
+    from company.assets.tools.memento import memento as memento_mod
+    from onemancompany.core.memory import RecallContext
+
+    class _StoreAdapter:
+        def __init__(self, **_):
+            pass
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            pass
+
+    class _RecallAdapter:
+        def __init__(self, **_):
+            pass
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            pass
+
+        async def recall(self, query, conv_id):
+            return RecallContext(
+                raw_text=f"## Mocked context for '{query}'\n- session_1 hit",
+                session_ids=["convE00006_sess1"],
+                metadata={"trace": "patched"},
+            )
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _StoreAdapter)
+    with _with_vessel(fake_vessel):
+        memento_mod.store.invoke({"turns": [{"role": "user", "content": "hello"}]})
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _RecallAdapter)
+    with _with_vessel(fake_vessel):
+        result = memento_mod.recall.invoke({"query": "hi", "top_k": 3})
+
+    assert result["status"] == "ok"
+    assert result["query"] == "hi"
+    assert "Mocked context" in result["context"]
+    assert result["session_ids"] == ["convE00006_sess1"]
+
+
+def test_recall_top_k_clamps(employee_root, fake_vessel, monkeypatch):
+    """top_k below 1 or above 20 is clamped silently."""
+    from company.assets.tools.memento import memento as memento_mod
+
+    captured = {}
+
+    class _CapturingAdapter:
+        def __init__(self, top_k=5, **_):
+            captured["top_k"] = top_k
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            pass
+
+        async def recall(self, query, conv_id):
+            from onemancompany.core.memory import RecallContext
+            return RecallContext(raw_text="", session_ids=[], metadata={})
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _CapturingAdapter)
+
+    sessions_dir = employee_root / "E00006" / "memory" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "001.json").write_text(
+        json.dumps({"session_num": 1, "date_time": "", "turns": [{"role": "user", "content": "x"}]})
+    )
+
+    with _with_vessel(fake_vessel):
+        memento_mod.recall.invoke({"query": "q", "top_k": 0})
+        assert captured["top_k"] == 1
+        memento_mod.recall.invoke({"query": "q", "top_k": 999})
+        assert captured["top_k"] == 20
+
+
+def test_recall_rejects_empty_query(employee_root, fake_vessel):
+    from company.assets.tools.memento import memento as memento_mod
+
+    with _with_vessel(fake_vessel):
+        result = memento_mod.recall.invoke({"query": "   "})
+
+    assert result["status"] == "error"
+    assert "query" in result["message"].lower()
