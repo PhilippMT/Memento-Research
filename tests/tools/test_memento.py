@@ -284,3 +284,88 @@ def test_recall_rejects_empty_query(employee_root, fake_vessel):
 
     assert result["status"] == "error"
     assert "query" in result["message"].lower()
+
+
+def test_isolation_two_employees(employee_root, monkeypatch):
+    """Sessions stored under E00006 are invisible to E00007."""
+    from company.assets.tools.memento import memento as memento_mod
+    from onemancompany.core.memory import RecallContext
+
+    (employee_root / "E00007").mkdir(exist_ok=True)
+
+    class _StoreAdapter:
+        def __init__(self, **_):
+            pass
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            pass
+
+    class _RecallAdapterNothing:
+        def __init__(self, **_):
+            pass
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            pass
+
+        async def recall(self, *_a, **_kw):
+            return RecallContext(raw_text="", session_ids=[], metadata={})
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _StoreAdapter)
+
+    v6 = SimpleNamespace(employee_id="E00006")
+    with _with_vessel(v6):
+        memento_mod.store.invoke({
+            "turns": [{"role": "user", "content": "Acme uses SAML"}]
+        })
+
+    e6_sessions = list((employee_root / "E00006" / "memory" / "sessions").glob("*.json"))
+    e7_sessions_dir = employee_root / "E00007" / "memory" / "sessions"
+
+    assert len(e6_sessions) == 1
+    assert not e7_sessions_dir.exists() or not list(e7_sessions_dir.glob("*.json"))
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _RecallAdapterNothing)
+    v7 = SimpleNamespace(employee_id="E00007")
+    with _with_vessel(v7):
+        result = memento_mod.recall.invoke({"query": "Acme"})
+
+    assert result["status"] == "ok"
+    assert "no prior sessions" in result["context"].lower()
+    assert result["session_ids"] == []
+
+
+def test_store_finalize_failure_preserves_transcript(employee_root, fake_vessel, monkeypatch):
+    """If finalize raises, the session JSON on disk is still written."""
+    from company.assets.tools.memento import memento as memento_mod
+
+    class _CrashingAdapter:
+        def __init__(self, **_):
+            pass
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            raise RuntimeError("simulated finalize crash")
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _CrashingAdapter)
+
+    with _with_vessel(fake_vessel):
+        result = memento_mod.store.invoke({
+            "turns": [{"role": "user", "content": "important fact"}]
+        })
+
+    assert result["status"] == "error"
+    assert "finalize" in result["message"].lower()
+
+    sessions_dir = employee_root / "E00006" / "memory" / "sessions"
+    written = list(sessions_dir.glob("*.json"))
+    assert len(written) == 1, "transcript must persist even when finalize crashes"
+    payload = json.loads(written[0].read_text())
+    assert payload["turns"][0]["content"] == "important fact"
