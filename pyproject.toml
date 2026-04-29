@@ -27,6 +27,7 @@ dependencies = [
     "ddgs>=8.0",
     "chromadb>=1.0",
     "openai>=1.0",
+    "memory-os-causal>=0.1.0,<0.2",
 ]
 
 [project.optional-dependencies]
