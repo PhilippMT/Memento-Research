@@ -270,3 +270,11 @@ docs/.DS_Store
 
 # memento test scratch dirs
 .tmp_memento_*/
+
+# memento manual / integration tests + fixtures (local only, not in release)
+scripts/test_memento_tool.py
+scripts/test_memento_agent.py
+scripts/test_memento_agent_corpus.py
+tests/integration/test_memento_e2e.py
+tests/integration/__init__.py
+tests/fixtures/memento_e2e_corpus.yaml
