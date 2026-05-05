@@ -813,8 +813,19 @@ async function startDemo(){
   btn.disabled=false;btn.textContent='Launch Pipeline';
 }
 
-document.getElementById('topicInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();startDemo()}});
+document.getElementById('topicInput').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){
+    e.preventDefault();
+    const topic = document.getElementById('topicInput').value.trim();
+    if(topic && window.launchPipeline) {
+      window.launchPipeline(topic);
+    } else {
+      startDemo();
+    }
+  }
+});
 renderStages();
 </script>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>
