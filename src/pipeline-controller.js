@@ -55,7 +55,7 @@ export class PipelineController {
     }
   }
 
-  handleStageComplete({ stageId, result }) {
+  handleStageComplete({ stageId, confidence, result }) {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
@@ -67,12 +67,24 @@ export class PipelineController {
         badge.textContent = 'Passed';
       }
       card.classList.remove('active');
+
+      // Add confidence gauge if score available
+      if (confidence != null) {
+        const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
+        addConf(card, pct);
+        const confEl = document.getElementById(`c${sid}`);
+        if (confEl) confEl.textContent = `${pct}%`;
+        addEvent('gtag', `PASS (${pct}%) — Stage ${sid}`);
+      } else {
+        addEvent('gtag', `PASS — Stage ${sid}`);
+      }
+    } else {
+      addEvent('gtag', `PASS — Stage ${sid}`);
     }
 
     setStage(sid, 'done');
     const connector = document.getElementById(`sc-${sid}`);
     if (connector) connector.classList.add('done');
-    addEvent('gtag', `PASS — Stage ${sid}`);
 
     // Check breakpoint
     if (typeof STAGES !== 'undefined' && STAGES[sid - 1] && STAGES[sid - 1].bp) {
@@ -80,7 +92,7 @@ export class PipelineController {
     }
   }
 
-  handleStageFailed({ stageId, reason }) {
+  handleStageFailed({ stageId, confidence, reason }) {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
@@ -93,10 +105,20 @@ export class PipelineController {
       }
       card.classList.remove('active');
       card.classList.add('rejected');
+
+      // Add confidence gauge for rejected stage too
+      if (confidence != null) {
+        const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
+        addConf(card, pct);
+        addEvent('gtag', `REJECTED (${pct}%) — Stage ${sid}`);
+      } else {
+        addEvent('gtag', `REJECTED — Stage ${sid}`);
+      }
+    } else {
+      addEvent('gtag', `REJECTED — Stage ${sid}`);
     }
 
     setStage(sid, 'failed');
-    addEvent('gtag', `REJECTED — Stage ${sid}`);
   }
 
   handleDirectorAction({ phase, message }) {

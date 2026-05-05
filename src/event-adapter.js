@@ -46,14 +46,30 @@ export class EventAdapter {
         });
         break;
 
-      case 'meeting_chat':
+      case 'meeting_chat': {
+        const role = this._inferRole(agent);
+        const message = payload.message || payload.content || '';
         this.emit('meeting_message', {
           agent: agent,
-          role: this._inferRole(agent),
-          message: payload.message || payload.content || '',
+          role: role,
+          message: message,
           roomId: payload.room_id,
         });
+
+        // Check if critic message contains a gate decision
+        if (role === 'critic') {
+          const gate = this._parseGateDecision(message);
+          if (gate && gate.decision) {
+            const stageId = this._inferStageFromAgent(agent, payload);
+            if (gate.decision === 'PASS') {
+              this.emit('stage_complete', { stageId, confidence: gate.confidence });
+            } else {
+              this.emit('stage_failed', { stageId, confidence: gate.confidence });
+            }
+          }
+        }
         break;
+      }
 
       case 'agent_done':
         this.emit('stage_complete', {
@@ -121,6 +137,20 @@ export class EventAdapter {
   }
 
   _stageFromNodeId(nodeId) {
+    return null;
+  }
+
+  _parseGateDecision(message) {
+    // Critic messages contain: "Confidence: 0.72" and "Decision: PASS/REJECT"
+    const confMatch = message.match(/confidence[:\s_]*([0-9.]+)/i);
+    const decisionMatch = message.match(/\b(PASS|REJECT)\b/i);
+
+    if (confMatch || decisionMatch) {
+      return {
+        confidence: confMatch ? parseFloat(confMatch[1]) : null,
+        decision: decisionMatch ? decisionMatch[1].toUpperCase() : null,
+      };
+    }
     return null;
   }
 }
