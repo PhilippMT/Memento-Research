@@ -16,10 +16,8 @@ async function init() {
   adapter = new EventAdapter();
   controller = new PipelineController(adapter);
 
-  // Wire: OMC events → adapter → controller
   client.onEvent((event) => adapter.process(event));
 
-  // Expose for other modules (breakpoint resume etc.)
   window._omcClient = client;
   window._controller = controller;
 
@@ -35,34 +33,47 @@ async function init() {
     return false;
   }
 
-  // Track connection state changes
   client.ws.addEventListener('close', () => setConnectionStatus(false));
-
   return true;
 }
 
 async function launchPipeline(topic) {
+  const btn = document.getElementById('launchBtn');
+
   if (!client || !client.ws || client.ws.readyState !== WebSocket.OPEN) {
-    // Fallback to demo if not connected
     startDemo();
     return;
   }
 
-  addEvent('dtag', `Submitting: "${topic}"`);
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
   document.getElementById('dirStatus').textContent = 'Submitting task...';
+  document.getElementById('meetingsArea').innerHTML = '';
+  postNotice(`Research topic: <strong>${topic}</strong>`, 'info');
 
-  const result = await client.submitTask(topic, {
-    projectName: `research-${Date.now()}`,
-  });
+  try {
+    const result = await client.submitTask(topic, {
+      projectName: `research-${Date.now()}`,
+    });
 
-  if (result.error) {
-    addEvent('stag', `Error: ${result.error}`);
-    return;
+    if (result.error) {
+      postNotice(`Error: ${result.error}`, 'error');
+      btn.textContent = 'Launch Pipeline';
+      btn.disabled = false;
+      document.getElementById('dirStatus').textContent = 'Error — try again';
+      return;
+    }
+
+    window._currentProjectId = result.project_id;
+    postNotice('Task accepted. Research Director delegating to team...', 'ok');
+    document.getElementById('dirStatus').textContent = 'Pipeline running...';
+    btn.textContent = 'Running...';
+  } catch (err) {
+    postNotice(`Submit failed: ${err.message}`, 'error');
+    btn.textContent = 'Launch Pipeline';
+    btn.disabled = false;
+    document.getElementById('dirStatus').textContent = 'Submit failed — retry';
   }
-
-  window._currentProjectId = result.project_id;
-  addEvent('dtag', `Task accepted. Project: ${result.project_id}`);
-  document.getElementById('dirStatus').textContent = 'Pipeline running...';
 }
 
 function setConnectionStatus(connected) {
@@ -72,11 +83,9 @@ function setConnectionStatus(connected) {
   el.querySelector('.conn-label').textContent = connected ? 'Connected' : 'Offline';
 }
 
-// Expose for HTML
 window.launchPipeline = launchPipeline;
 window.resumeBreakpoint = (feedback) => controller.resumeBreakpoint(feedback);
 
-// Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
   init();
 });

@@ -114,68 +114,52 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .btn-launch:hover{background:var(--green-light);box-shadow:0 4px 14px rgba(36,90,64,.25);transform:translateY(-1px)}
 .btn-launch:disabled{opacity:.5;cursor:not-allowed;transform:none}
 
-/* ══ MEETING CARDS (collapsible) ══ */
-.meetings{max-width:720px;margin:0 auto}
+/* ══ STAGE STREAM ══ */
+.meetings{max-width:720px;margin:0 auto;overflow-y:auto;max-height:calc(100vh - 300px);padding:8px 0;scroll-behavior:smooth}
 
-.meeting-card{background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);margin-bottom:12px;box-shadow:var(--shadow-sm);opacity:0;transform:translateY(12px);transition:opacity .4s,transform .4s,border-color .3s,box-shadow .3s}
-.meeting-card.visible{opacity:1;transform:translateY(0)}
-.meeting-card.active{border-color:var(--green);box-shadow:var(--shadow-md)}
-.meeting-card.rejected{border-color:var(--coral)}
-.meeting-card.paused{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold-subtle),var(--shadow-md)}
+/* Notice bar (system/director inline message) */
+.notice{display:flex;align-items:center;gap:8px;padding:6px 14px;margin:6px 0;font-size:.78rem;color:var(--text3);animation:fadeIn .3s ease}
+.notice .notice-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.notice .notice-dot.dot-info{background:var(--gold)}.notice .notice-dot.dot-error{background:var(--coral)}.notice .notice-dot.dot-ok{background:var(--green)}
+.notice .notice-text{flex:1;line-height:1.4}
+.notice .notice-time{font-family:var(--mono);font-size:.58rem;color:var(--text4);flex-shrink:0}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
-/* Collapsed state */
-.meeting-card.collapsed .meeting-body,
-.meeting-card.collapsed .conf-row,
-.meeting-card.collapsed .minutes,
-.meeting-card.collapsed .retry-banner{display:none}
+/* Stage card */
+.stage-card{background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);margin-bottom:12px;box-shadow:var(--shadow-sm);animation:fadeIn .4s ease;overflow:hidden}
+.stage-card.sc-active{border-color:var(--green);box-shadow:var(--shadow-md)}
+.stage-card.sc-error{border-color:var(--coral)}
+.stage-card.sc-done{border-color:var(--green-subtle)}
 
-.meeting-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-light);background:var(--bg);cursor:pointer;user-select:none}
-.meeting-card.collapsed .meeting-head{border-bottom:none}
-.collapse-chevron{width:16px;height:16px;color:var(--text4);transition:transform .2s;flex-shrink:0}
-.meeting-card.collapsed .collapse-chevron{transform:rotate(-90deg)}
-.meeting-label{font-family:var(--mono);font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text4);flex:1;margin:0}
-.meeting-label strong{color:var(--text2);font-weight:600}
-.meeting-badge{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.62rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-.meeting-badge.in-progress{background:var(--gold-subtle);color:#8B7332}
-.meeting-badge.concluded{background:var(--green-subtle);color:var(--green)}
-.meeting-badge.rejected{background:var(--coral-subtle);color:var(--coral)}
-.meeting-badge.paused{background:var(--gold-subtle);color:#8B7332;border:1px solid var(--gold)}
-/* Collapsed confidence mini */
-.conf-mini{font-family:var(--mono);font-size:.7rem;font-weight:600;margin-left:6px}
-.conf-mini.high{color:var(--green)}.conf-mini.mid{color:#8B7332}.conf-mini.low{color:var(--coral)}
+.sc-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-light);background:var(--bg)}
+.sc-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff;background:var(--green);flex-shrink:0}
+.sc-title{flex:1;font-size:.82rem;font-weight:600;color:var(--text)}
+.sc-title small{font-weight:400;color:var(--text3);margin-left:6px}
+.sc-badge{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.6rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.sc-badge.badge-running{background:var(--gold-subtle);color:#8B7332}
+.sc-badge.badge-done{background:var(--green-subtle);color:var(--green)}
+.sc-badge.badge-error{background:var(--coral-subtle);color:var(--coral)}
 
-/* Participants */
-.participants{display:flex;align-items:center;justify-content:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--border-light)}
-.participant{display:flex;align-items:center;gap:8px}
-.participant-avatar{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff}
-.participant-avatar.p{background:var(--green)}.participant-avatar.c{background:var(--coral)}
-.participant-name{font-size:.78rem;font-weight:550}
-.participant-role{font-size:.66rem;color:var(--text3)}
-.vs-divider{font-family:var(--mono);font-size:.68rem;color:var(--text4);font-weight:600;width:26px;height:26px;border-radius:50%;border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center}
+/* Content sections inside card */
+.sc-body{padding:0}
+.sc-section{padding:12px 16px;border-bottom:1px solid var(--border-light)}
+.sc-section:last-child{border-bottom:none}
+.sc-section-label{font-family:var(--mono);font-size:.58rem;text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:5px}
+.sc-section-label.lbl-producer{color:var(--green)}
+.sc-section-label.lbl-critic{color:var(--coral)}
+.sc-section-label.lbl-system{color:var(--text4)}
+.sc-section-content{font-size:.82rem;line-height:1.7;color:var(--text2);white-space:pre-wrap;word-break:break-word}
+.sc-section-content strong{color:var(--text);font-weight:600}
+.sc-section-content .error-text{color:var(--coral)}
 
-/* Producer / Critic columns */
-.meeting-body{display:grid;grid-template-columns:1fr 1fr}
-.meeting-col{padding:14px 16px}
-.meeting-col+.meeting-col{border-left:1px solid var(--border-light)}
-.meeting-col.critic-col{background:var(--coral-subtle)}
-.col-label{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;display:flex;align-items:center;gap:5px;font-weight:600}
-.col-label.producer-label{color:var(--green)}.col-label.critic-label{color:var(--coral)}
-.col-text{font-size:.85rem;line-height:1.7;color:var(--text2)}
-.col-text .hl{font-weight:600;color:var(--text)}
-.col-text .issue{display:block;padding:5px 0;border-bottom:1px solid var(--border-light)}
-.col-text .issue:last-child{border-bottom:none}
-.col-text .sev{font-family:var(--mono);font-size:.6rem;padding:1px 5px;border-radius:var(--pill);font-weight:600;margin-right:3px;text-transform:uppercase}
-.col-text .sev.high{background:var(--coral-subtle);color:var(--coral)}
-.col-text .sev.med{background:var(--gold-subtle);color:#8B7332}
-
-/* Confidence bar */
-.conf-row{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--border-light);background:var(--bg)}
-.conf-label{font-family:var(--mono);font-size:.68rem;color:var(--text3)}
-.conf-bar{flex:1;height:4px;background:var(--border-light);border-radius:2px;overflow:hidden}
-.conf-fill{height:100%;border-radius:2px;transition:width .6s}
-.conf-fill.high{background:var(--green)}.conf-fill.mid{background:var(--gold)}.conf-fill.low{background:var(--coral)}
-.conf-val{font-family:var(--mono);font-size:.78rem;font-weight:600;min-width:30px;text-align:right}
-.conf-val.high{color:var(--green)}.conf-val.mid{color:#8B7332}.conf-val.low{color:var(--coral)}
+/* Confidence bar (inside card footer) */
+.sc-conf{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--bg)}
+.sc-conf-label{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
+.sc-conf-bar{flex:1;height:4px;background:var(--border-light);border-radius:2px;overflow:hidden}
+.sc-conf-fill{height:100%;border-radius:2px;transition:width .6s}
+.sc-conf-fill.high{background:var(--green)}.sc-conf-fill.mid{background:var(--gold)}.sc-conf-fill.low{background:var(--coral)}
+.sc-conf-val{font-family:var(--mono);font-size:.72rem;font-weight:600;min-width:30px;text-align:right}
+.sc-conf-val.high{color:var(--green)}.sc-conf-val.mid{color:#8B7332}.sc-conf-val.low{color:var(--coral)}
 
 /* ══ ACTION PANEL (fixed at bottom) ══ */
 .action-panel{position:fixed;bottom:0;left:272px;right:320px;z-index:100;background:var(--white);border-top:2px solid var(--gold);box-shadow:0 -8px 32px rgba(0,0,0,.1);border-radius:var(--r-lg) var(--r-lg) 0 0;display:flex;flex-direction:column;max-height:50vh;overflow:hidden}
@@ -491,50 +475,175 @@ function resumePipeline(){
   }
 }
 
-function createMeeting(id,prodName,prodInit,title,opts={}){
-  const card=document.createElement('div');
-  card.className='meeting-card active';
-  card.id='m-'+id;
-  const chevron='<svg class="collapse-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>';
-  card.innerHTML=`
-    <div class="meeting-head" onclick="this.parentElement.classList.toggle('collapsed')">
-      ${chevron}
-      <h2 class="meeting-label"><strong>Meeting:</strong> ${title}</h2>
-      <span class="meeting-badge in-progress">In Progress</span>
+// ── Stage Stream API ──
+// Manages stage cards and inline notices in the center area.
+
+let _currentCard = null; // reference to the active stage-card DOM element
+
+function _time() {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2,'0')).join(':');
+}
+
+function _scroll() {
+  const area = document.getElementById('meetingsArea');
+  if (area) area.scrollTop = area.scrollHeight;
+}
+
+// Sanitize content: strip project IDs, file paths, raw JSON fragments
+function _clean(text) {
+  if (!text) return '';
+  let s = text;
+  // Strip [Project ID: ...] blocks
+  s = s.replace(/\[Project ID:\s*[^\]]*\]/g, '');
+  // Strip [Project workspace: ...] blocks
+  s = s.replace(/\[Project workspace:\s*[^\]]*\]/g, '');
+  // Strip long hex IDs (>12 chars)
+  s = s.replace(/\b[0-9a-f]{12,}\b/g, '');
+  // Strip absolute file paths
+  s = s.replace(/\/Users\/[^\s,)}\]]+/g, '');
+  // Strip JSON-like {key: value} fragments if they look like raw dumps
+  s = s.replace(/\{"[^"]{0,20}":\s*"[^"]{0,100}"\}/g, '');
+  // Collapse multiple whitespace/newlines
+  s = s.replace(/\n{3,}/g, '\n\n').replace(/  +/g, ' ').trim();
+  return s;
+}
+
+// Post a compact inline notice (director/system one-liners)
+function postNotice(text, level='info') {
+  const area = document.getElementById('meetingsArea');
+  const el = document.createElement('div');
+  el.className = 'notice';
+  el.innerHTML = `<span class="notice-dot dot-${level}"></span><span class="notice-text">${_clean(text)}</span><span class="notice-time">${_time()}</span>`;
+  area.appendChild(el);
+  _scroll();
+}
+
+// Create or get a stage card. Each stage has one card that updates in place.
+function getStageCard(id, title, agentName, agentInitials) {
+  let card = document.getElementById('sc-' + id);
+  if (card) return card;
+
+  const area = document.getElementById('meetingsArea');
+  card = document.createElement('div');
+  card.className = 'stage-card sc-active';
+  card.id = 'sc-' + id;
+  card.innerHTML = `
+    <div class="sc-head">
+      <div class="sc-icon">${agentInitials}</div>
+      <div class="sc-title">${title}<small>${agentName}</small></div>
+      <span class="sc-badge badge-running">Running</span>
     </div>
-    <div class="participants">
-      <div class="participant"><div class="participant-avatar p">${prodInit}</div><div><div class="participant-name">${prodName}</div><div class="participant-role">Producer</div></div></div>
-      <div class="vs-divider">vs</div>
-      <div class="participant"><div class="participant-avatar c">AC</div><div><div class="participant-name">Adversarial Critic</div><div class="participant-role">Critic</div></div></div>
-    </div>
-    <div class="meeting-body">
-      <div class="meeting-col"><div class="col-label producer-label"><span style="width:4px;height:4px;border-radius:50%;background:var(--green)"></span> ${prodName}</div><div class="col-text" id="prod-${id}"><span class="cursor"></span></div></div>
-      <div class="meeting-col critic-col"><div class="col-label critic-label"><span style="width:4px;height:4px;border-radius:50%;background:var(--coral)"></span> Adversarial Critic</div><div class="col-text" id="crit-${id}"><span style="color:var(--text4);font-style:italic">Awaiting producer...</span></div></div>
+    <div class="sc-body">
+      <div class="sc-section" id="sc-prod-${id}">
+        <div class="sc-section-label lbl-producer"><span style="width:4px;height:4px;border-radius:50%;background:var(--green)"></span> ${agentName}</div>
+        <div class="sc-section-content" id="sc-prod-text-${id}"><span style="color:var(--text4)">Working...</span></div>
+      </div>
     </div>`;
-  document.getElementById('meetingsArea').prepend(card);
-  requestAnimationFrame(()=>card.classList.add('visible'));
+  area.appendChild(card);
+  _scroll();
+
+  // Deactivate previous card
+  if (_currentCard && _currentCard !== card) {
+    _currentCard.classList.remove('sc-active');
+  }
+  _currentCard = card;
   return card;
 }
 
-function addConf(card,pct){
-  const cls=pct>=65?'high':pct>=50?'mid':'low';
-  const row=document.createElement('div');
-  row.className='conf-row';
-  row.innerHTML=`<span class="conf-label">Confidence</span><div class="conf-bar"><div class="conf-fill ${cls}" style="width:${pct}%"></div></div><span class="conf-val ${cls}">${pct}%</span>`;
-  card.appendChild(row);
-  // Add mini conf to header for collapsed view
-  const badge=card.querySelector('.meeting-badge');
-  const mini=document.createElement('span');
-  mini.className='conf-mini '+cls;
-  mini.textContent=pct+'%';
-  badge.after(mini);
+// Update the producer section of a stage card
+function updateProducer(cardId, content) {
+  const el = document.getElementById('sc-prod-text-' + cardId);
+  if (el) el.innerHTML = _clean(content);
+  _scroll();
+}
+
+// Add or update the critic section of a stage card
+function updateCritic(cardId, content) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  let sec = document.getElementById('sc-crit-' + cardId);
+  if (!sec) {
+    sec = document.createElement('div');
+    sec.className = 'sc-section';
+    sec.id = 'sc-crit-' + cardId;
+    sec.style.background = 'var(--coral-subtle)';
+    sec.innerHTML = `<div class="sc-section-label lbl-critic"><span style="width:4px;height:4px;border-radius:50%;background:var(--coral)"></span> Adversarial Critic</div><div class="sc-section-content" id="sc-crit-text-${cardId}"></div>`;
+    card.querySelector('.sc-body').appendChild(sec);
+  }
+  const el = document.getElementById('sc-crit-text-' + cardId);
+  if (el) el.innerHTML = _clean(content);
+  _scroll();
+}
+
+// Set card status badge
+function setCardStatus(cardId, status) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  const badge = card.querySelector('.sc-badge');
+  if (!badge) return;
+  card.classList.remove('sc-active', 'sc-error', 'sc-done');
+  if (status === 'done') {
+    badge.className = 'sc-badge badge-done'; badge.textContent = 'Passed';
+    card.classList.add('sc-done');
+  } else if (status === 'error' || status === 'rejected') {
+    badge.className = 'sc-badge badge-error'; badge.textContent = 'Rejected';
+    card.classList.add('sc-error');
+  } else {
+    badge.className = 'sc-badge badge-running'; badge.textContent = 'Running';
+    card.classList.add('sc-active');
+  }
+}
+
+// Add confidence bar to a stage card
+function addCardConf(cardId, pct) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  if (card.querySelector('.sc-conf')) return; // already has one
+  const cls = pct >= 65 ? 'high' : pct >= 50 ? 'mid' : 'low';
+  const el = document.createElement('div');
+  el.className = 'sc-conf';
+  el.innerHTML = `<span class="sc-conf-label">Confidence</span><div class="sc-conf-bar"><div class="sc-conf-fill ${cls}" style="width:${pct}%"></div></div><span class="sc-conf-val ${cls}">${pct}%</span>`;
+  card.appendChild(el);
+  _scroll();
+}
+
+// Legacy wrappers used by pipeline-controller
+function postActivity(name, initials, role, content, tag) {
+  if (role === 'director' || role === 'system') {
+    const level = tag === 'reject' ? 'error' : tag === 'pass' ? 'ok' : 'info';
+    postNotice(`<strong>${name}</strong>: ${content}`, level);
+    return;
+  }
+  // Producer/critic content goes into the active card
+  postNotice(`<strong>${name}</strong>: ${_clean(content)}`, tag === 'reject' ? 'error' : tag === 'pass' ? 'ok' : 'info');
+}
+
+function postDivider(text) {
+  // No-op — stage cards replace dividers
+}
+
+function postConfidence(pct) {
+  // Fallback: attach to current card if possible
+  if (_currentCard) {
+    const id = _currentCard.id.replace('sc-', '');
+    addCardConf(id, pct);
+  }
+}
+
+function createMeeting(id, prodName, prodInit, title, opts={}) {
+  return getStageCard(id, title, prodName, prodInit);
+}
+
+function addConf(card, pct) {
+  postConfidence(pct);
 }
 
 function addActionBar(card,stageId){
   document.getElementById('action-panel-global')?.remove();
 
   const stageName=STAGES[stageId-1]?.name||'Stage '+stageId;
-  const producerText=document.getElementById('prod-s'+stageId)?.textContent||'';
+  const producerText='';
 
   const panel=document.createElement('div');
   panel.className='action-panel';
@@ -694,145 +803,120 @@ async function startDemo(){
 
   document.getElementById('dirStatus').textContent='Running pipeline...';
 
-  // ── Stage 1: Topic ──
-  addEvent('dtag','Research Director received topic. Delegating Stage 1.');
+  // ── Stage 1: Topic Refinement ──
+  postNotice('Research Director received topic. Delegating Stage 1.','info');
   setStage(1,'running');
-  addEvent('mtag','Meeting: Topic Refiner + Adversarial Critic');
+  await sleep(600);
 
-  const m1=createMeeting('s1','Topic Refiner','TR','Stage 1 — Topic Refinement');
-  await sleep(1200);
-  document.getElementById('prod-s1').innerHTML='Refined: "<span class="hl">Hybrid sparse-attention with learned routing for sub-quadratic long-context reasoning</span>, evaluated on RULER, LongBench, SCROLLS."';
-  addEvent('ttag','Topic Refiner produced output.');
+  const c1=getStageCard('s1','Stage 1 — Topic Refinement','Topic Refiner','TR');
   await sleep(800);
-  document.getElementById('crit-s1').innerHTML='Specific and tractable. Evaluation suite well-chosen. Minor: define "sub-quadratic" formally. <strong>PASS.</strong>';
-  addConf(m1,78);
-  m1.querySelector('.meeting-badge').className='meeting-badge concluded';
-  m1.querySelector('.meeting-badge').textContent='Passed';
-  m1.classList.remove('active');
+
+  updateProducer('s1','Refined: "Hybrid sparse-attention with learned routing for sub-quadratic long-context reasoning, evaluated on RULER, LongBench, SCROLLS."');
+  addEvent('ttag','Topic Refiner produced output.');
+  await sleep(1000);
+
+  updateCritic('s1','Specific and tractable. Evaluation suite well-chosen. Minor: define "sub-quadratic" formally. <strong>PASS.</strong>');
+  addCardConf('s1',78);
+  setCardStatus('s1','done');
   setStage(1,'done');
-  document.getElementById('sc-1').classList.add('done');
+  document.getElementById('sc-1')?.classList.add('done');
   addEvent('gtag','PASS (78%)');
   document.getElementById('c1').textContent='78%';
 
-  if(STAGES[0].bp){m1.classList.add('paused');setStage(1,'paused');addActionBar(m1,1);addEvent('stag','Breakpoint hit. Waiting for user.');await waitForUser();m1.classList.remove('paused');setStage(1,'done')}
+  if(STAGES[0].bp){setStage(1,'paused');addActionBar(null,1);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(1,'done')}
 
   await sleep(500);
 
-  // ── Stage 2: Literature ──
-  addEvent('dtag','Delegating Stage 2: Literature Survey');
+  // ── Stage 2: Literature Survey ──
+  postNotice('Delegating Stage 2: Literature Survey','info');
   setStage(2,'running');
-  addEvent('mtag','Meeting: Lit. Surveyor + Adversarial Critic');
+  await sleep(600);
 
-  const m2=createMeeting('s2','Lit. Surveyor','LS','Stage 2 — Literature Survey');
-  await sleep(1200);
-  document.getElementById('prod-s2').innerHTML='Found <span class="hl">47 papers</span> in 3 clusters. Gap: no work combines <span class="hl">learned routing</span> with sparse attention for long-context.';
+  getStageCard('s2','Stage 2 — Literature Survey','Lit. Surveyor','LS');
   await sleep(800);
-  document.getElementById('crit-s2').innerHTML='47/47 citations verified. Gap partially addressed by Chen et al. (2025) with <span class="hl">static</span> routing. Gap is real. <strong>PASS.</strong>';
-  addConf(m2,72);
-  m2.querySelector('.meeting-badge').className='meeting-badge concluded';
-  m2.querySelector('.meeting-badge').textContent='Passed';
-  m2.classList.remove('active');
+
+  updateProducer('s2','Found <strong>47 papers</strong> in 3 clusters. Gap: no work combines <strong>learned routing</strong> with sparse attention for long-context.');
+  await sleep(1000);
+
+  updateCritic('s2','47/47 citations verified. Gap partially addressed by Chen et al. (2025) with <strong>static</strong> routing. Gap is real. <strong>PASS.</strong>');
+  addCardConf('s2',72);
+  setCardStatus('s2','done');
   setStage(2,'done');
-  document.getElementById('sc-2').classList.add('done');
+  document.getElementById('sc-2')?.classList.add('done');
   addEvent('gtag','PASS (72%)');
   document.getElementById('c2').textContent='72%';
 
-  // Collapse completed stages
-  m1.classList.add('collapsed');
-
-  if(STAGES[1].bp){m2.classList.add('paused');setStage(2,'paused');addActionBar(m2,2);addEvent('stag','Breakpoint hit.');await waitForUser();m2.classList.remove('paused');setStage(2,'done')}
+  if(STAGES[1].bp){setStage(2,'paused');addActionBar(null,2);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(2,'done')}
 
   await sleep(500);
 
-  // ── Stage 3: Idea (default breakpoint) ──
-  addEvent('dtag','Delegating Stage 3: Idea Generation');
+  // ── Stage 3: Idea Generation (default breakpoint) ──
+  postNotice('Delegating Stage 3: Idea Generation','info');
   setStage(3,'running');
-  addEvent('mtag','Meeting: Idea Generator + Adversarial Critic');
+  await sleep(600);
 
-  const m3=createMeeting('s3','Idea Generator','IG','Stage 3 — Idea Generation');
-  await sleep(1200);
-  document.getElementById('prod-s3').innerHTML='Hypothesis: A <span class="hl">learned routing mechanism</span> that dynamically selects sparse attention patterns per-head/per-layer outperforms fixed patterns by 3-5% at O(n&radic;n).';
+  getStageCard('s3','Stage 3 — Idea Generation','Idea Generator','IG');
+  await sleep(800);
+
+  updateProducer('s3','Hypothesis: A <strong>learned routing mechanism</strong> that dynamically selects sparse attention patterns per-head/per-layer outperforms fixed patterns by 3-5% at O(n√n).');
   addEvent('ttag','Idea Generator proposed hypothesis.');
-  await sleep(1000);
-  document.getElementById('crit-s3').innerHTML='<span class="issue"><span class="sev high">HIGH</span> 3 papers with similarity &gt;0.7. Chen et al. at 0.74.</span><span class="issue"><span class="sev high">HIGH</span> "Static vs learned" is incremental without evidence of qualitative difference.</span><span class="issue"><span class="sev med">MED</span> 3-5% claim unjustified.</span>';
-  addConf(m3,45);
-  m3.querySelector('.meeting-badge').className='meeting-badge rejected';
-  m3.querySelector('.meeting-badge').textContent='Rejected';
-  m3.classList.remove('active');m3.classList.add('rejected');
+  await sleep(1200);
+
+  updateCritic('s3','<span class="error-text">HIGH:</span> 3 papers with similarity >0.7. Chen et al. at 0.74.\n<span class="error-text">HIGH:</span> "Static vs learned" is incremental without evidence of qualitative difference.\n<span class="error-text">MED:</span> 3-5% claim unjustified.');
+  addCardConf('s3',45);
+  setCardStatus('s3','rejected');
   setStage(3,'failed');
   addEvent('gtag','REJECTED (45%)');
   document.getElementById('c3').textContent='45%';
 
-  // Rejection trace
-  const mins=document.createElement('div');
-  mins.className='minutes';
-  mins.innerHTML='<div class="minutes-head">Rejection Trace</div><div class="minutes-body">Novelty claim thin. Chen et al. (2025) already explored routed sparse attention. Strengthen with input-dependent sparsity evidence from Rae et al. (2024).</div>';
-  m3.appendChild(mins);
+  await sleep(800);
 
   // Retry
-  addEvent('dtag','Retry Stage 3 (1/3). Feeding critic feedback.');
-  const rb=document.createElement('div');rb.className='retry-banner';
-  rb.innerHTML='&#8635; Research Director: Retry 1/3 — incorporating critique';
-  m3.appendChild(rb);
+  postNotice('Research Director: Retry 1/3 — incorporating critic feedback.','info');
+  setCardStatus('s3','running');
   setStage(3,'running');
-  await sleep(1500);
+  await sleep(1200);
+
+  updateProducer('s3','Revised: Input-dependent sparsity via per-layer routing gates. Key differentiator: routing is conditioned on input statistics (not fixed patterns). Evaluation includes ablation against Chen et al. baseline.');
+  await sleep(1000);
+
+  updateCritic('s3','Differentiation from Chen et al. is now clear. Ablation design addresses prior concern. <strong>PASS.</strong>');
+  // Remove old conf and add new
+  const oldConf=document.querySelector('#sc-s3 .sc-conf');
+  if(oldConf)oldConf.remove();
+  addCardConf('s3',71);
+  setCardStatus('s3','done');
+  document.getElementById('c3').textContent='71%';
   addEvent('gtag','PASS on retry (71%)');
-  m3.querySelector('.meeting-badge').className='meeting-badge concluded';
-  m3.querySelector('.meeting-badge').textContent='Passed (retry)';
-  m3.classList.remove('rejected');
-  m3.querySelector('.conf-fill').className='conf-fill mid';
-  m3.querySelector('.conf-fill').style.width='71%';
-  m3.querySelector('.conf-val').className='conf-val mid';
-  m3.querySelector('.conf-val').textContent='71%';
-  m3.querySelector('.conf-mini').className='conf-mini mid';
-  m3.querySelector('.conf-mini').textContent='71%';
-  document.getElementById('c3r').textContent='71%';
 
-  // Collapse earlier
-  m2.classList.add('collapsed');
-
-  // Breakpoint on Stage 3 (default)
+  // Breakpoint
   if(STAGES[2].bp){
     setStage(3,'paused');
-    m3.classList.add('paused');
-    addActionBar(m3,3);
-    addEvent('stag','Breakpoint on Stage 3. Review the hypothesis before continuing.');
+    postNotice('Breakpoint at Stage 3. Review the hypothesis before continuing.','info');
+    addActionBar(null,3);
     document.getElementById('dirStatus').textContent='Paused at Stage 3 — waiting for user';
     await waitForUser();
-    // Post-approve: clear action bar, visual transition
-    m3.classList.remove('paused');
     document.getElementById('action-panel-global')?.remove();
-    addEvent('dtag','Research Director: Stage 3 approved by user. Proceeding.');
+    postNotice('User approved. Continuing pipeline.','ok');
     await sleep(500);
   }
 
   setStage(3,'done');
-  document.getElementById('sc-3').classList.add('done');
-  m3.classList.add('collapsed');
+  document.getElementById('sc-3')?.classList.add('done');
 
-  // Update calibration
   document.getElementById('calM').textContent='4';
   document.getElementById('calP').textContent='75%';
   document.getElementById('calR').textContent='1';
 
   await sleep(300);
   document.getElementById('dirStatus').textContent='Demo complete. 3/9 stages shown.';
-  addEvent('dtag','Remaining: 6 stages queued. Next: Methodology Designer.');
-  addEvent('stag','Demo: 3/9 stages. Connect OMC backend for full pipeline.');
+  postNotice('Remaining: 6 stages queued. Next: Methodology Designer.','info');
+  postNotice('Demo complete. Connect OMC backend for full 9-stage pipeline.','info');
   btn.disabled=false;btn.textContent='Launch Pipeline';
 }
 
-document.getElementById('topicInput').addEventListener('keydown',e=>{
-  if(e.key==='Enter'&&!e.shiftKey){
-    e.preventDefault();
-    const topic = document.getElementById('topicInput').value.trim();
-    if(topic && window.launchPipeline) {
-      window.launchPipeline(topic);
-    } else {
-      startDemo();
-    }
-  }
-});
+// Enter only inserts newline; submission via button only
+
 renderStages();
 </script>
 <script type="module" src="src/main.js"></script>

@@ -1,13 +1,14 @@
 // src/pipeline-controller.js
-// Drives UI state in response to domain events from EventAdapter.
+// Drives stage cards in response to domain events from EventAdapter.
+// Uses: getStageCard(), updateProducer(), updateCritic(), setCardStatus(),
+//       addCardConf(), postNotice() — all defined in index.html.
 
 export class PipelineController {
   constructor(adapter) {
     this.adapter = adapter;
     this.currentStage = null;
-    this.meetingCards = {}; // stageId → DOM element
+    this.stageCardIds = {}; // stageId → card DOM id
 
-    // Subscribe to domain events
     adapter.on('stage_start', (e) => this.handleStageStart(e));
     adapter.on('meeting_message', (e) => this.handleMeetingMessage(e));
     adapter.on('stage_complete', (e) => this.handleStageComplete(e));
@@ -16,42 +17,46 @@ export class PipelineController {
     adapter.on('system_event', (e) => this.handleSystemEvent(e));
   }
 
+  _cardId(stageId) {
+    return this.stageCardIds[stageId] || `stage${stageId}`;
+  }
+
+  _ensureCard(stageId) {
+    if (this.stageCardIds[stageId]) return this._cardId(stageId);
+    const name = this._getProducerName(stageId);
+    const initials = this._getInitials(name);
+    const title = `Stage ${stageId} — ${this._getStageName(stageId)}`;
+    const id = `stage${stageId}`;
+    getStageCard(id, title, name, initials);
+    this.stageCardIds[stageId] = id;
+    return id;
+  }
+
   handleStageStart({ stageId, roomName, participants }) {
     if (!stageId) return;
-
-    // Collapse previous meeting card
-    if (this.currentStage && this.meetingCards[this.currentStage]) {
-      this.meetingCards[this.currentStage].classList.add('collapsed');
-    }
-
     this.currentStage = stageId;
     setStage(stageId, 'running');
-    addEvent('dtag', `Delegating Stage ${stageId}`);
-    addEvent('mtag', `Meeting: ${roomName || `Stage ${stageId}`}`);
-
-    // Create meeting card using existing createMeeting() from index.html
-    const producerName = this._getProducerName(stageId);
-    const initials = this._getInitials(producerName);
-    const card = createMeeting(
-      `s${stageId}`,
-      producerName,
-      initials,
-      `Stage ${stageId} — ${this._getStageName(stageId)}`
-    );
-    this.meetingCards[stageId] = card;
+    this._ensureCard(stageId);
+    postNotice(`Delegating Stage ${stageId}: ${this._getStageName(stageId)}`, 'info');
   }
 
   handleMeetingMessage({ agent, role, message }) {
-    if (!this.currentStage) return;
-    const card = this.meetingCards[this.currentStage];
-    if (!card) return;
+    if (!message || !message.trim()) return;
 
-    if (role === 'producer') {
-      const prodEl = card.querySelector(`#prod-s${this.currentStage}`);
-      if (prodEl) prodEl.innerHTML = message;
-    } else if (role === 'critic') {
-      const critEl = card.querySelector(`#crit-s${this.currentStage}`);
-      if (critEl) critEl.innerHTML = message;
+    // Find or create the right card
+    const sid = this.currentStage;
+    if (!sid) {
+      // No stage yet — show as notice
+      postNotice(`<strong>${agent || 'Agent'}</strong>: ${message}`, 'info');
+      return;
+    }
+
+    const cardId = this._ensureCard(sid);
+
+    if (role === 'critic') {
+      updateCritic(cardId, message);
+    } else {
+      updateProducer(cardId, message);
     }
   }
 
@@ -59,25 +64,17 @@ export class PipelineController {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
-    const card = this.meetingCards[sid];
-    if (card) {
-      const badge = card.querySelector('.meeting-badge');
-      if (badge) {
-        badge.className = 'meeting-badge concluded';
-        badge.textContent = 'Passed';
-      }
-      card.classList.remove('active');
+    const cardId = this._ensureCard(sid);
+    setCardStatus(cardId, 'done');
 
-      // Add confidence gauge if score available
-      if (confidence != null) {
-        const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
-        addConf(card, pct);
-        const confEl = document.getElementById(`c${sid}`);
-        if (confEl) confEl.textContent = `${pct}%`;
-        addEvent('gtag', `PASS (${pct}%) — Stage ${sid}`);
-      } else {
-        addEvent('gtag', `PASS — Stage ${sid}`);
-      }
+    if (result) updateProducer(cardId, result);
+
+    if (confidence != null) {
+      const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
+      addCardConf(cardId, pct);
+      const confEl = document.getElementById(`c${sid}`);
+      if (confEl) confEl.textContent = `${pct}%`;
+      addEvent('gtag', `PASS (${pct}%) — Stage ${sid}`);
     } else {
       addEvent('gtag', `PASS — Stage ${sid}`);
     }
@@ -86,9 +83,8 @@ export class PipelineController {
     const connector = document.getElementById(`sc-${sid}`);
     if (connector) connector.classList.add('done');
 
-    // Check breakpoint
     if (typeof STAGES !== 'undefined' && STAGES[sid - 1] && STAGES[sid - 1].bp) {
-      this._triggerBreakpoint(sid, card);
+      this._triggerBreakpoint(sid);
     }
   }
 
@@ -96,24 +92,15 @@ export class PipelineController {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
-    const card = this.meetingCards[sid];
-    if (card) {
-      const badge = card.querySelector('.meeting-badge');
-      if (badge) {
-        badge.className = 'meeting-badge rejected';
-        badge.textContent = 'Rejected';
-      }
-      card.classList.remove('active');
-      card.classList.add('rejected');
+    const cardId = this._ensureCard(sid);
+    setCardStatus(cardId, 'rejected');
 
-      // Add confidence gauge for rejected stage too
-      if (confidence != null) {
-        const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
-        addConf(card, pct);
-        addEvent('gtag', `REJECTED (${pct}%) — Stage ${sid}`);
-      } else {
-        addEvent('gtag', `REJECTED — Stage ${sid}`);
-      }
+    if (reason) updateCritic(cardId, reason);
+
+    if (confidence != null) {
+      const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
+      addCardConf(cardId, pct);
+      addEvent('gtag', `REJECTED (${pct}%) — Stage ${sid}`);
     } else {
       addEvent('gtag', `REJECTED — Stage ${sid}`);
     }
@@ -122,22 +109,26 @@ export class PipelineController {
   }
 
   handleDirectorAction({ phase, message }) {
-    addEvent('dtag', message || phase);
+    const text = message || phase;
+    postNotice(text, 'info');
+    addEvent('dtag', text);
     const dirStatus = document.getElementById('dirStatus');
-    if (dirStatus) dirStatus.textContent = message || phase;
+    if (dirStatus) dirStatus.textContent = text;
   }
 
   handleSystemEvent({ type, agent, payload }) {
     if (type === 'heartbeat') return;
-    addEvent('stag', `[${type}] ${agent || ''}: ${JSON.stringify(payload || {}).slice(0, 80)}`);
+    const text = (payload && payload.text) ? payload.text : '';
+    if (!text) return;
+    // Only show in the right-panel events, not center area
+    addEvent('stag', `[${type}] ${text}`);
   }
 
-  _triggerBreakpoint(stageId, card) {
+  _triggerBreakpoint(stageId) {
     this.pausedStageId = stageId;
     setStage(stageId, 'paused');
-    if (card) card.classList.add('paused');
-    addActionBar(card, stageId);
-    addEvent('stag', `Breakpoint on Stage ${stageId}. Waiting for user.`);
+    postNotice(`Breakpoint at Stage ${stageId}. Waiting for user approval.`, 'info');
+    addActionBar(null, stageId);
     const dirStatus = document.getElementById('dirStatus');
     if (dirStatus) dirStatus.textContent = `Paused at Stage ${stageId} — waiting for user`;
   }
@@ -147,22 +138,17 @@ export class PipelineController {
     const sid = this.pausedStageId;
     this.pausedStageId = null;
 
-    const card = this.meetingCards[sid];
-    if (card) card.classList.remove('paused');
-
     document.getElementById('action-panel-global')?.remove();
     setStage(sid, 'done');
+    postNotice('Approved by user. Continuing pipeline.', 'ok');
     addEvent('dtag', `Stage ${sid} approved by user. Proceeding.`);
 
-    // Signal OMC to continue
     if (window._omcClient && window._currentProjectId) {
       await window._omcClient.resumeAfterBreakpoint(
         window._currentProjectId, sid, feedback
       );
     }
   }
-
-  // --- Stage metadata ---
 
   _getProducerName(stageId) {
     const names = {
