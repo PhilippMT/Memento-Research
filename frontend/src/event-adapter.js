@@ -94,11 +94,32 @@ export class EventAdapter {
         break;
 
       case 'state_snapshot':
-        // Check if this is a breakpoint event
-        if (payload && payload.type === 'breakpoint_hit') {
+        if (payload && payload.pipeline_managed) {
+          // Pipeline engine events — authoritative stage info
+          if (payload.type === 'stage_start') {
+            this.emit('stage_start', { stageId: payload.stage, stageName: payload.stage_name, employeeName: payload.employee_name, employeeId: payload.employee_id });
+          } else if (payload.type === 'stage_complete') {
+            this.emit('stage_complete', { stageId: payload.stage, confidence: payload.confidence });
+          } else if (payload.type === 'stage_reviewing') {
+            this.emit('stage_reviewing', { stageId: payload.stage });
+          } else if (payload.type === 'stage_failed') {
+            this.emit('stage_failed', { stageId: payload.stage, confidence: payload.confidence });
+          } else if (payload.type === 'critic_result') {
+            this.emit('meeting_message', {
+              agent: 'Adversarial Critic',
+              role: 'critic',
+              message: `**${payload.decision}** (confidence: ${payload.confidence != null ? (payload.confidence <= 1 ? Math.round(payload.confidence * 100) + '%' : payload.confidence + '%') : 'N/A'})\n\n${payload.text}`,
+            });
+          } else if (payload.type === 'breakpoint_hit') {
+            this.emit('breakpoint_hit', payload);
+          } else if (payload.type === 'pipeline_complete') {
+            this.emit('director_action', { phase: 'complete', message: 'Pipeline complete! All 9 stages finished.' });
+          }
+        } else if (payload && payload.type === 'file_written') {
+          this.emit('file_written', payload);
+        } else if (payload && payload.type === 'breakpoint_hit') {
           this.emit('breakpoint_hit', payload);
         }
-        // Otherwise ignore heartbeats
         break;
 
       case 'connected':
@@ -170,18 +191,8 @@ export class EventAdapter {
       return;
     }
 
-    // Check if this is a gate decision from the critic
-    if (role === 'critic') {
-      const gate = this._parseGateDecision(text);
-      if (gate && gate.decision) {
-        const stageId = this._inferStageFromEmployee(empId);
-        if (gate.decision === 'PASS') {
-          this.emit('stage_complete', { stageId, confidence: gate.confidence });
-        } else {
-          this.emit('stage_failed', { stageId, confidence: gate.confidence });
-        }
-      }
-    }
+    // Gate decisions are now handled by the pipeline engine backend.
+    // Do NOT emit stage_complete/stage_failed from text parsing — causes duplicates.
 
     // Try to clean the message before displaying
     const cleaned = this._tryCleanMessage(text);
@@ -190,15 +201,8 @@ export class EventAdapter {
       return;
     }
 
-    // Detect stage from content and ensure stage card exists
-    const detectedStage = this._detectStage(text);
-    if (detectedStage) {
-      this.emit('stage_start', {
-        stageId: detectedStage,
-        roomName: '',
-        participants: empId ? [empId] : [],
-      });
-    }
+    // Stage detection is now handled by the pipeline engine backend.
+    // Do NOT emit stage_start from text heuristics — it causes duplicates.
 
     // Detect if agent is asking CEO for clarification
     if (this._isClarificationRequest(text)) {
@@ -230,13 +234,16 @@ export class EventAdapter {
     // Detect stage from description or result
     const stageId = this._detectStage(desc) || this._detectStage(result) || this._inferStageFromEmployee(empId);
 
-    // Check if task is a CEO request or needs clarification
+    // Check if task is a CEO request or needs clarification.
+    // Skip if a breakpoint action panel is already showing — it handles the interaction.
     if (task.node_type === 'CEO_REQUEST' || p.ceo_request || this._isClarificationRequest(desc)) {
-      this.emit('clarification_needed', {
-        agent: name,
-        employeeId: empId || '',
-        message: desc || 'Agent needs your input.',
-      });
+      if (!document.getElementById('action-panel-global')) {
+        this.emit('clarification_needed', {
+          agent: name,
+          employeeId: empId || '',
+          message: desc || 'Agent needs your input.',
+        });
+      }
     }
 
     if (status === 'running' || status === 'in_progress' || status === 'processing') {
@@ -647,10 +654,12 @@ export class EventAdapter {
     return 'producer';
   }
 
-  // Detect stage number from text like "Stage 2", "Execute Stage 3", or stage name keywords
+  // Detect stage number from title-like patterns: "Stage 3: ...", "Stage 3 —", "Execute Stage 3"
+  // Does NOT match "Stage 3" buried in a longer sentence (e.g. assignment lists).
   _detectStage(text) {
     if (!text) return null;
-    const m = text.match(/Stage\s+(\d)/i);
+    // Only match "Stage N" when followed by a colon, dash, or end-of-string (title format)
+    const m = text.match(/(?:^|\n)\s*(?:Execute\s+)?Stage\s+(\d+)\s*[:\u2014—-]/i);
     if (m) return parseInt(m[1]);
 
     // Fallback: detect by stage name keywords

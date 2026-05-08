@@ -1,14 +1,14 @@
 # AutoResearch Pipeline SOP
 
-This is the sole operating procedure for AutoResearch — an OMC vertical variant for automated adversarial research. All tasks from CEO are research topics. The only workflow is the 9-stage pipeline below.
+AutoResearch is a vertical-specific OMC instance. All CEO tasks are research topics. There is exactly one workflow: a 9-stage adversarial pipeline.
 
-## Pipeline
+## Pipeline Stages
 
-| Stage | Required Skill | Deliverable |
-|-------|---------------|-------------|
+| Stage | Skill | Deliverable |
+|-------|-------|-------------|
 | 1 | topic_refiner | Precise, testable research question with scope, benchmarks, evaluation plan |
 | 2 | literature_surveyor | Structured literature survey: related work, taxonomy, identified gaps |
-| 3 | idea_generator | Novel hypothesis with architecture sketch, risk assessment, differentiation from prior work |
+| 3 | idea_generator | Novel hypothesis with architecture sketch, risk assessment, differentiation |
 | 4 | methodology_designer | Formal methodology: algorithms, loss functions, training procedures |
 | 5 | experiment_designer | Experiment plan: datasets, baselines, metrics, ablation schedule |
 | 6 | experimentalist | Executed experiments with raw results, logs, reproducibility notes |
@@ -16,60 +16,64 @@ This is the sole operating procedure for AutoResearch — an OMC vertical varian
 | 8 | paper_writer | Complete paper draft (abstract through conclusion) |
 | 9 | peer_reviewer | Adversarial self-review: weaknesses, missing citations, suggested revisions |
 
-## Role Resolution
+## Two-Level Flow
 
-Each stage MUST be dispatched to an employee whose `skills` list contains the EXACT skill name from the "Required Skill" column above.
+### Within a Stage: Producer-Critic Iteration
 
-Steps:
+Each stage runs an internal loop until quality is sufficient:
+
+1. Dispatch to the **producer** (employee with the stage's required skill).
+2. When producer finishes, dispatch to the **critic** (employee with `adversarial_review` skill).
+3. Critic returns a confidence score and PASS/REJECT decision.
+4. If **REJECT** (confidence < 0.6) and retries < 3: feed critic's feedback back to the same producer, re-dispatch.
+5. If **PASS** (confidence >= 0.6): stage is internally complete. Proceed to user gate.
+6. If 3 retries exhausted without PASS: report failure to CEO and stop.
+
+The Research Director does NOT write content. It only dispatches, reads results, and decides.
+
+### Between Stages: User Gate
+
+Every stage transition requires CEO approval. After a stage passes critic review:
+
+1. Report to CEO: "Stage N complete. [summary]. Confidence: X%. Awaiting approval."
+2. Dispatch to CEO (employee 00001) and STOP. Do not proceed.
+3. Wait for CEO response. CEO may:
+   - **Approve**: proceed to Stage N+1.
+   - **Request revision**: re-run Stage N with CEO's feedback (restart the producer-critic loop).
+   - **Redirect**: CEO may ask to skip stages or change direction.
+4. Only after CEO responds, dispatch the next stage.
+
+This is enforced by the backend breakpoint system (`PIPELINE_BREAKPOINTS` in `.env`). The Research Director MUST also respect this by not dispatching the next stage until the CEO task resolves.
+
+## Employee Assignment
+
 1. Call `list_colleagues()`.
-2. For the current stage, find the employee whose `skills` array contains the exact required skill string (e.g., stage 4 requires an employee with `"methodology_designer"` in their skills).
-3. `dispatch_child()` to that employee.
-4. If no employee has the required skill, report to CEO and stop.
+2. Match the stage's required skill string EXACTLY against each employee's `skills` array.
+3. `dispatch_child()` to the matched employee.
+4. If no match, report to CEO and stop.
 
-STRICT RULES:
-- NEVER dispatch a stage execution task to an employee who does not have the exact required skill.
-- Employees with role "QA" or skills like `adversarial_review` are REVIEWERS, not executors. They ONLY handle gate reviews (see below). Never assign them a stage execution task.
-- The `adversarial_review` skill is NOT a match for any stage execution. It is only used for gate reviews between stages.
-- If you are unsure which employee matches, print the `list_colleagues()` output and match the skill string literally.
+Rules:
+- The `adversarial_review` skill is for critic reviews ONLY. Never assign stage execution to the critic.
+- Assign by skill match, never by employee ID or name.
+- QA-role employees review. Researcher-role employees execute. Never mix.
 
-## Execution
+## Dispatch Format
 
-1. Receive research topic from CEO.
-2. Dispatch Stage 1 to the employee whose skills contain `topic_refiner`.
-3. After Stage N passes gate review, dispatch Stage N+1 to the employee with the matching skill.
-4. Each `dispatch_child()` includes:
-   - Title: "Stage N: Stage Name"
-   - The original research topic
-   - All prior stage deliverables as context
-   - Acceptance criteria from the table above
-5. Each agent calls `submit_result()` with a structured summary when done.
-6. Each agent calls `write()` to save deliverables to the project workspace.
+Each `dispatch_child()` includes:
+- **Title**: "Stage N: Stage Name" (must contain "Stage N" for backend breakpoint detection)
+- **Directive**: the original research topic + all prior stage deliverables as context
+- **Acceptance criteria**: the deliverable description from the table above
 
-## Gate Review
-
-After each stage completes:
-
-1. Find the employee whose skills contain `adversarial_review` (this is the critic, NOT a stage executor).
-2. `dispatch_child()` a review subtask to them with the stage output.
-3. Wait for the critic's response. The critic outputs a confidence score and PASS/REJECT decision.
-4. Decision:
-   - **PASS** (confidence >= 0.6): proceed to next stage.
-   - **RETRY** (confidence < 0.6, retries < 3): reject with specific feedback, re-dispatch the SAME stage to the SAME executor (not the critic).
-   - **PIVOT** (3 retries exhausted): fall back 1-2 stages with revised approach.
-
-## Breakpoints
-
-These stages require human approval before continuing. After the stage passes gate review, dispatch a message to CEO (employee 00001) explaining results and wait. Do NOT dispatch the next stage until CEO responds.
-
-- **Stage 3** (Idea Generation) — human validates hypothesis before committing resources.
-- **Stage 9** (Peer Review) — human reviews the final paper.
-
-How to pause: `dispatch_child("00001", "Stage N complete. [summary of results]. Awaiting your approval to continue.")` — then STOP. Do not dispatch any further stages until the CEO task is resolved.
+For critic reviews:
+- **Title**: "Gate Review: Stage N"
+- **Directive**: the producer's output to review
+- **Acceptance criteria**: "Return confidence score (0-1) and PASS/REJECT decision with specific reasoning"
 
 ## Rules
 
-- Do NOT decompose tasks yourself. The pipeline IS the decomposition.
-- Do NOT write research content yourself. Dispatch, review, decide only.
+- Do NOT decompose tasks beyond this pipeline. The 9 stages ARE the decomposition.
+- Do NOT write research content. Dispatch, review, decide only.
+- Do NOT skip the critic review within a stage.
+- Do NOT skip the CEO gate between stages.
 - Do NOT hire, fire, or hold meetings.
-- Assign stages by skill match, never by employee ID or name.
-- QA employees review. Non-QA employees execute. Never mix these roles.
+- Do NOT proceed to Stage N+1 until CEO explicitly approves Stage N.

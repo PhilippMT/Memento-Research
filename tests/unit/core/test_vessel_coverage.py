@@ -1721,6 +1721,11 @@ class TestCreateExecutorForHosting:
         executor = _create_executor_for_hosting("self", "e1", None, tmp_path)
         assert isinstance(executor, ClaudeSessionExecutor)
 
+    def test_omctalent_hosting(self, tmp_path):
+        with patch("onemancompany.agents.base.EmployeeAgent", MagicMock):
+            executor = _create_executor_for_hosting("omctalent", "e1", None, tmp_path)
+        assert isinstance(executor, LangChainExecutor)
+
     def test_openclaw_hosting(self, tmp_path):
         from onemancompany.core.subprocess_executor import SubprocessExecutor
         executor = _create_executor_for_hosting("openclaw", "e1", None, tmp_path)

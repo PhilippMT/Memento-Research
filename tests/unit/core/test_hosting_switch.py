@@ -24,6 +24,11 @@ class TestCreateExecutorForHosting:
             executor = _create_executor_for_hosting("company", "00010", None, Path("/tmp"))
         assert isinstance(executor, LangChainExecutor)
 
+    def test_omctalent(self):
+        with patch("onemancompany.agents.base.EmployeeAgent", MagicMock):
+            executor = _create_executor_for_hosting("omctalent", "00010", None, Path("/tmp"))
+        assert isinstance(executor, LangChainExecutor)
+
     def test_self(self):
         executor = _create_executor_for_hosting("self", "00002", MagicMock, Path("/tmp"))
         assert isinstance(executor, ClaudeSessionExecutor)

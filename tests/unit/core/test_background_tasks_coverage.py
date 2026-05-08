@@ -118,6 +118,20 @@ class TestSaveLoad:
             mgr2._load()
         assert mgr2._tasks["t1"].status == "stopped"
 
+    def test_save_unlinks_temp_file_on_write_error(self, tmp_path, monkeypatch):
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        mgr._tasks["t1"] = _make_task("t1")
+
+        import onemancompany.core.background_tasks as bt_mod
+
+        def boom(*args, **kwargs):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(bt_mod.os, "replace", boom)
+
+        with pytest.raises(OSError, match="replace failed"):
+            mgr._save()
+
 
 # ---------------------------------------------------------------------------
 # _is_pid_alive (lines 169, 172)
@@ -180,6 +194,24 @@ class TestLaunch:
         with pytest.raises(RuntimeError, match="limit reached"):
             await mgr.launch("echo hi", "test", "/tmp", "tester")
 
+    @pytest.mark.asyncio
+    async def test_launch_reserved_server_port_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PORT", "8123")
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        with pytest.raises(RuntimeError, match="reserved"):
+            await mgr.launch("python -m http.server --port 8123", "server", str(tmp_path), "tester")
+
+    @pytest.mark.asyncio
+    async def test_launch_closes_log_when_subprocess_fails(self, tmp_path, monkeypatch):
+        async def fail_create(*args, **kwargs):
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_shell", fail_create)
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+
+        with pytest.raises(OSError, match="spawn failed"):
+            await mgr.launch("echo hi", "test", str(tmp_path), "tester")
+
 
 # ---------------------------------------------------------------------------
 # _detect_port_from_command (line 280)
@@ -188,6 +220,8 @@ class TestLaunch:
 class TestDetectPort:
     def test_detect_port(self):
         assert BackgroundTaskManager._detect_port_from_command("--port 3000") == 3000
+        assert BackgroundTaskManager._detect_port_from_command("--PORT=3001") == 3001
+        assert BackgroundTaskManager._detect_port_from_command("-p3002") == 3002
 
     def test_no_port(self):
         assert BackgroundTaskManager._detect_port_from_command("echo hello") is None
@@ -225,6 +259,91 @@ class TestDetectPortFromOutput:
             await mgr._detect_port_from_output("t1")
         assert task.port is None
 
+    @pytest.mark.asyncio
+    async def test_stops_when_log_missing_then_task_removed(self, tmp_path):
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        task = _make_task("t1", status="running")
+        mgr._tasks["t1"] = task
+
+        async def fake_sleep(_seconds):
+            mgr._tasks.pop("t1", None)
+
+        with patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)):
+            await mgr._detect_port_from_output("t1")
+        assert task.port is None
+
+    @pytest.mark.asyncio
+    async def test_read_error_is_ignored(self, tmp_path, monkeypatch):
+        import onemancompany.core.background_tasks as bt_mod
+
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        task = _make_task("t1", status="running")
+        mgr._tasks["t1"] = task
+        log_path = mgr.output_log_path("t1")
+        log_path.parent.mkdir(parents=True)
+        log_path.write_text("pending")
+
+        calls = 0
+
+        async def fake_sleep(_seconds):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                task.status = "completed"
+
+        monkeypatch.setattr(bt_mod, "read_text_utf", lambda path: (_ for _ in ()).throw(OSError("read failed")))
+
+        with patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)):
+            await mgr._detect_port_from_output("t1")
+        assert task.port is None
+
+
+class TestMonitor:
+    @pytest.mark.asyncio
+    async def test_monitor_missing_task_returns(self, tmp_path):
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        proc = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        log_fd = MagicMock()
+
+        await mgr._monitor("missing", proc, log_fd)
+
+        proc.wait.assert_not_called()
+        log_fd.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_monitor_marks_failed_and_cleans_maps(self, tmp_path, monkeypatch):
+        import onemancompany.core.background_tasks as bt_mod
+
+        task = _make_task("t1", status="running")
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        mgr._tasks["t1"] = task
+        proc = MagicMock()
+        proc.wait = AsyncMock(return_value=7)
+        log_fd = MagicMock()
+
+        monkeypatch.setattr(bt_mod, "spawn_background", lambda coro: None, raising=False)
+
+        await mgr._monitor("t1", proc, log_fd)
+
+        assert task.status == "failed"
+        assert task.returncode == 7
+        log_fd.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_monitor_reraises_cancelled(self, tmp_path):
+        task = _make_task("t1", status="running")
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        mgr._tasks["t1"] = task
+        proc = MagicMock()
+        proc.wait = AsyncMock(side_effect=asyncio.CancelledError)
+        log_fd = MagicMock()
+
+        with pytest.raises(asyncio.CancelledError):
+            await mgr._monitor("t1", proc, log_fd)
+
+        log_fd.close.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # terminate (lines 344-348)
@@ -257,6 +376,30 @@ class TestTerminate:
 
         result = await mgr.terminate("t1")
         assert result is True
+        assert task.status == "stopped"
+
+    @pytest.mark.asyncio
+    async def test_terminate_kills_after_timeout_and_cancels_monitor(self, tmp_path):
+        mgr = BackgroundTaskManager(data_dir=tmp_path)
+        task = _make_task("t1", status="running")
+        mgr._tasks["t1"] = task
+
+        proc = MagicMock()
+        proc.returncode = -9
+        proc.terminate = MagicMock()
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        mgr._processes["t1"] = proc
+
+        monitor = MagicMock()
+        monitor.cancel = MagicMock()
+        mgr._monitors["t1"] = monitor
+
+        with patch("asyncio.wait_for", new=AsyncMock(side_effect=asyncio.TimeoutError)):
+            assert await mgr.terminate("t1") is True
+
+        proc.kill.assert_called_once()
+        monitor.cancel.assert_called_once()
         assert task.status == "stopped"
 
 

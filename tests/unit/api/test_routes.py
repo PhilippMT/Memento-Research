@@ -322,7 +322,7 @@ class TestCeoSubmitTask:
         assert data["status"] == "processing"
 
     async def test_routes_to_ea_initializes_task_tree(self):
-        """CEO task submission creates a TaskTree with CEO root and EA child."""
+        """CEO task submission creates a TaskTree with a CEO root."""
         state = _make_state()
         bus = EventBus()
         mock_loop = MagicMock()
@@ -354,11 +354,8 @@ class TestCeoSubmitTask:
         assert root is not None
         assert root.node_type == "ceo_prompt"
         assert root.description == "Build a website"
-        # EA is child of CEO root
-        children = saved_tree.get_active_children(root.id)
-        assert len(children) >= 1
-        ea_node = children[0]
-        assert ea_node.id != root.id
+        # Pipeline stage children are created by PipelineEngine when a stage
+        # employee is available; this route is responsible for the CEO root.
 
 
 # ---------------------------------------------------------------------------
@@ -3695,13 +3692,13 @@ class TestSalesSettleNotFound:
 
 
 # ---------------------------------------------------------------------------
-# CEO task — EA routing fallback (lines 446-453)
+# CEO task — pipeline does not require EA loop
 # ---------------------------------------------------------------------------
 
 
 class TestCeoTaskEAFallback:
-    async def test_ceo_task_ea_not_available(self):
-        """When no EA loop, returns 503."""
+    async def test_ceo_task_starts_without_ea_loop(self):
+        """Standard CEO task dispatch starts the pipeline without requiring an EA loop."""
         state = _make_state()
         bus = EventBus()
 
@@ -3715,8 +3712,10 @@ class TestCeoTaskEAFallback:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 resp = await c.post("/api/ceo/task", data={"task": "Do something"})
 
-        assert resp.status_code == 503
-        assert "not available" in resp.json()["detail"]
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "processing"
+        assert data["project_id"] == "p1"
 
 
 # ---------------------------------------------------------------------------
@@ -6207,6 +6206,9 @@ class TestCheckTalentRequiredFields:
 
     def test_complete_company_profile(self):
         assert self._check({"hosting": "company", "llm_model": "gpt-4o", "api_provider": "openrouter", "auth_method": "api_key"}) == []
+
+    def test_complete_omctalent_profile(self):
+        assert self._check({"hosting": "omctalent", "llm_model": "gpt-4o", "api_provider": "openrouter", "auth_method": "api_key"}) == []
 
     def test_complete_self_profile(self):
         assert self._check({"hosting": "self"}) == []

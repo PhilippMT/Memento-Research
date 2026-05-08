@@ -109,6 +109,26 @@ class TestWorktree:
         # removing a worktree that was never added should not raise
         pw.remove_worktree(workspace, wt, "nonexistent")
 
+    def test_remove_when_workspace_git_missing_deletes_directory(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "missing_ws"
+        wt = tmp_path / "orphan_wt"
+        wt.mkdir()
+        (wt / "file.txt").write_text("orphan")
+
+        pw.remove_worktree(workspace, wt, "alpha")
+
+        assert not wt.exists()
+
+
+class TestGitHelper:
+    def test_git_check_false_returns_failure(self, tmp_path: Path) -> None:
+        result = pw._git(["status"], tmp_path, check=False)
+        assert result.returncode != 0
+
+    def test_git_check_true_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(subprocess.CalledProcessError):
+            pw._git(["status"], tmp_path)
+
 
 # ---------------------------------------------------------------------------
 # TestPromote
@@ -150,6 +170,17 @@ class TestPromote:
         assert conflict["file"] == "shared.txt"
         assert "main version" in conflict["product_version"]
         assert "branch version" in conflict["your_version"]
+
+    def test_has_conflict_markers_handles_unmerged_without_markers(self, setup) -> None:
+        ws, wt = setup
+        _commit_file(ws, "shared.txt", "main version", "main edit")
+        _commit_file(wt, "shared.txt", "branch version", "branch edit")
+        result = pw.promote(ws, wt, "beta")
+        assert result["status"] == "conflict"
+
+        (ws / "shared.txt").write_text("resolved version")
+
+        assert pw._has_conflict_markers(ws) is False
 
     def test_conflict_resolution_then_retry(self, setup) -> None:
         ws, wt = setup

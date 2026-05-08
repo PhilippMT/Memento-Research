@@ -271,6 +271,28 @@ async def write(
         new_lines = content.splitlines()
         result["lines_before"] = len(old_lines)
         result["lines_after"] = len(new_lines)
+
+    # Emit file_written event for frontend workspace panel
+    try:
+        from onemancompany.core.events import event_bus, CompanyEvent, EventType
+        from onemancompany.core.config import SYSTEM_AGENT
+        await event_bus.publish(CompanyEvent(
+            type=EventType.STATE_SNAPSHOT,
+            payload={
+                "type": "file_written",
+                "file_name": resolved.name,
+                "file_path": str(resolved),
+                "full_path": str(resolved),
+                "size": len(content.encode("utf-8")),
+                "content": content,
+                "employee_id": employee_id,
+                "type_action": "update" if is_update else "create",
+            },
+            agent=employee_id or SYSTEM_AGENT,
+        ))
+    except Exception as exc:
+        logger.debug("write(): failed to publish file_written event: {}", exc)
+
     return result
 
 

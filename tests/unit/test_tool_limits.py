@@ -30,7 +30,7 @@ class TestMaybePersistResult:
         assert len(result) < DEFAULT_MAX_RESULT_SIZE
 
     def test_persisted_file_exists(self, tmp_path):
-        large = "line\n" * 20000
+        large = "x" * (DEFAULT_MAX_RESULT_SIZE + 1000)
         result = maybe_persist_result(large, "bash", project_dir=str(tmp_path))
         # Extract filepath from result
         match = re.search(r"saved to: (.+\.txt)", result)

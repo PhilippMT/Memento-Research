@@ -31,6 +31,7 @@ from onemancompany.talent_market.talent_spec import (
 class TestHostingMode:
     def test_values(self):
         assert HostingMode.COMPANY == "company"
+        assert HostingMode.OMCTALENT == "omctalent"
         assert HostingMode.SELF == "self"
         assert HostingMode.REMOTE == "remote"
 
@@ -39,6 +40,7 @@ class TestHostingMode:
 
     def test_from_string(self):
         assert HostingMode("company") is HostingMode.COMPANY
+        assert HostingMode("omctalent") is HostingMode.OMCTALENT
         assert HostingMode("self") is HostingMode.SELF
         assert HostingMode("remote") is HostingMode.REMOTE
 

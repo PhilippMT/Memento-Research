@@ -36,12 +36,21 @@ export class PipelineController {
     return id;
   }
 
-  handleStageStart({ stageId, roomName, participants }) {
+  handleStageStart({ stageId, stageName, employeeName, employeeId, roomName, participants }) {
     if (!stageId) return;
     this.currentStage = stageId;
+    if (typeof showPipelineBar === 'function') showPipelineBar();
     setStage(stageId, 'running');
-    this._ensureCard(stageId);
-    postNotice(`Delegating Stage ${stageId}: ${this._getStageName(stageId)}`, 'info');
+
+    // Create card with actual employee name
+    const name = employeeName || this._getProducerName(stageId);
+    const initials = this._getInitials(name);
+    const title = `Stage ${stageId} — ${stageName || this._getStageName(stageId)}`;
+    const id = `stage${stageId}`;
+    if (!this.stageCardIds[stageId]) {
+      getStageCard(id, title, name, initials);
+      this.stageCardIds[stageId] = id;
+    }
   }
 
   handleMeetingMessage({ agent, role, message }) {
@@ -88,7 +97,6 @@ export class PipelineController {
     const cardId = this._ensureCard(sid);
     setCardStatus(cardId, 'reviewing');
     setStage(sid, 'reviewing');
-    postNotice(`Stage ${sid} complete. Awaiting critic review...`, 'info');
   }
 
   handleStageComplete({ stageId, confidence, result }) {
@@ -103,20 +111,10 @@ export class PipelineController {
     if (confidence != null) {
       const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
       addCardConf(cardId, pct);
-      const confEl = document.getElementById(`c${sid}`);
-      if (confEl) confEl.textContent = `${pct}%`;
-      addEvent('gtag', `PASS (${pct}%) — Stage ${sid}`);
-    } else {
-      addEvent('gtag', `PASS — Stage ${sid}`);
     }
 
+    // Pipeline engine sends breakpoint_hit separately — don't check here
     setStage(sid, 'done');
-    const connector = document.getElementById(`sc-${sid}`);
-    if (connector) connector.classList.add('done');
-
-    if (typeof STAGES !== 'undefined' && STAGES[sid - 1] && STAGES[sid - 1].bp) {
-      this._triggerBreakpoint(sid);
-    }
   }
 
   handleStageFailed({ stageId, confidence, reason }) {
@@ -131,9 +129,6 @@ export class PipelineController {
     if (confidence != null) {
       const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
       addCardConf(cardId, pct);
-      addEvent('gtag', `REJECTED (${pct}%) — Stage ${sid}`);
-    } else {
-      addEvent('gtag', `REJECTED — Stage ${sid}`);
     }
 
     setStage(sid, 'failed');
@@ -142,7 +137,7 @@ export class PipelineController {
   handleDirectorAction({ phase, message }) {
     const text = message || phase;
     postNotice(text, 'info');
-    addEvent('dtag', text);
+    void 0;
     const dirStatus = document.getElementById('dirStatus');
     if (dirStatus) dirStatus.textContent = text;
   }
@@ -152,16 +147,19 @@ export class PipelineController {
     const text = (payload && payload.text) ? payload.text : '';
     if (!text) return;
     // Only show in the right-panel events, not center area
-    addEvent('stag', `[${type}] ${text}`);
+    void 0;
   }
 
   _triggerBreakpoint(stageId) {
     this.pausedStageId = stageId;
     setStage(stageId, 'paused');
-    postNotice(`Breakpoint at Stage ${stageId}. Waiting for user approval.`, 'info');
-    addActionBar(null, stageId);
     const dirStatus = document.getElementById('dirStatus');
     if (dirStatus) dirStatus.textContent = `Paused at Stage ${stageId} — waiting for user`;
+
+    const stageName = this._getStageName(stageId);
+    if (typeof openBreakpointDialog === 'function') {
+      openBreakpointDialog(stageId, stageName);
+    }
   }
 
   handleBreakpointHit({ stage, project_id, message }) {
@@ -170,24 +168,30 @@ export class PipelineController {
     this._triggerBreakpoint(sid);
   }
 
-  async resumeBreakpoint(feedback = '') {
+  async resumeBreakpoint(feedback = '', isRevision = false) {
     if (!this.pausedStageId) return;
     const sid = this.pausedStageId;
     this.pausedStageId = null;
 
-    if (typeof removeActionBar === 'function') removeActionBar();
-    else document.getElementById('action-panel-global')?.remove();
-    setStage(sid, 'done');
-    postNotice('Approved by user. Continuing pipeline.', 'ok');
+    if (typeof closeBreakpointDialog === 'function') closeBreakpointDialog();
+    if (isRevision) {
+      setStage(sid, 'running');
+      postNotice(`Revision requested for Stage ${sid}. Re-running with feedback.`, 'info');
+    } else {
+      setStage(sid, 'done');
+      postNotice('Approved by user. Continuing pipeline.', 'ok');
+    }
 
     const projectId = window._currentSessionId || window._currentProjectId;
     if (window._omcClient && projectId) {
+      const actualFeedback = isRevision
+        ? `[REVISION REQUESTED] CEO wants Stage ${sid} revised: ${feedback}. Re-run this stage. Do NOT advance.`
+        : feedback;
       try {
-        await window._omcClient.resumePipelineBreakpoint(projectId, sid, feedback);
+        await window._omcClient.resumePipelineBreakpoint(projectId, sid, actualFeedback);
       } catch (e) {
-        // Fallback to old API
         await window._omcClient.resumeAfterBreakpoint(
-          window._currentProjectId, sid, feedback
+          window._currentProjectId, sid, actualFeedback
         );
       }
     }
@@ -200,6 +204,11 @@ export class PipelineController {
   }
 
   handleClarification({ agent, employeeId, message }) {
+    // If a breakpoint dialog is showing, just add the message to it
+    if (this.pausedStageId && typeof addBreakpointMessage === 'function') {
+      addBreakpointMessage(agent, message);
+      return;
+    }
     if (typeof openChatDialog === 'function') {
       openChatDialog(agent, employeeId, message);
     }
