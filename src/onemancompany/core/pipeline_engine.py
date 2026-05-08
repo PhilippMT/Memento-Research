@@ -386,8 +386,8 @@ class PipelineEngine:
         if m:
             try:
                 return float(m.group(1))
-            except ValueError:
-                pass
+            except ValueError as exc:
+                logger.debug("Unable to parse confidence value '{}': {}", m.group(1), exc)
         return None
 
     # ------------------------------------------------------------------
@@ -417,8 +417,8 @@ class PipelineEngine:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            logger.debug("Skipping critic_result event; no running event loop: {}", exc)
 
     def _emit_stage_event(self, event_type: str, stage_id: int, confidence: float = None, employee_name: str = "", employee_id: str = ""):
         """Emit stage lifecycle events for the frontend."""
@@ -437,8 +437,8 @@ class PipelineEngine:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
-        except RuntimeError:
-            pass  # No event loop — skip event
+        except RuntimeError as exc:
+            logger.debug("Skipping stage event; no running event loop: {}", exc)
 
     def _emit_gate_event(self, stage_id: int, confidence: float = None, exhausted: bool = False):
         """Emit breakpoint/gate event for frontend to show approval dialog."""
@@ -456,8 +456,8 @@ class PipelineEngine:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            logger.debug("Skipping gate event; no running event loop: {}", exc)
 
     def _emit_pipeline_complete(self):
         import asyncio
@@ -470,5 +470,5 @@ class PipelineEngine:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            logger.debug("Skipping pipeline complete event; no running event loop: {}", exc)

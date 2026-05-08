@@ -290,8 +290,8 @@ async def write(
             },
             agent=employee_id or SYSTEM_AGENT,
         ))
-    except Exception:
-        pass  # non-critical — don't break write on event failure
+    except Exception as exc:
+        logger.debug("write(): failed to publish file_written event: {}", exc)
 
     return result
 

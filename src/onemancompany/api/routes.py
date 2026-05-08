@@ -623,8 +623,8 @@ async def ceo_submit_task(
                     fpath = Path(a["path"])
                     if fpath.exists() and fpath.stat().st_size < 500_000:
                         prior_context += f"\n--- {a['filename']} ---\n{fpath.read_text(encoding='utf-8')}\n"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to read uploaded attachment {}: {}", a.get("path", ""), exc)
 
         # Start pipeline engine
         engine = PipelineEngine(ctx_id, str(pdir), task)
@@ -634,8 +634,8 @@ async def ceo_submit_task(
             try:
                 import json as _json2
                 _assignments = _json2.loads(stage_assignments)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Ignoring invalid stage_assignments JSON: {}", exc)
 
         engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments)
 
