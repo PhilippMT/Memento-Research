@@ -116,6 +116,7 @@ class TestEnums:
 
     def test_hosting_mode_values(self):
         assert HostingMode.COMPANY.value == "company"
+        assert HostingMode.OMCTALENT.value == "omctalent"
         assert HostingMode.SELF.value == "self"
         assert HostingMode.REMOTE.value == "remote"
 

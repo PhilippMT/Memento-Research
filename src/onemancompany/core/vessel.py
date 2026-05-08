@@ -3753,6 +3753,7 @@ def register_founding_employee(
 
     hosting → executor mapping:
       company   → LangChainExecutor (with agent-specific class)
+      omctalent → LangChainExecutor (platform-internal OMC talent)
       self      → ClaudeSessionExecutor
       openclaw  → SubprocessExecutor (launch.sh)
     """
@@ -3791,6 +3792,12 @@ def _create_executor_for_hosting(
         from onemancompany.core.subprocess_executor import SubprocessExecutor
         script_path = str(emp_dir / LAUNCH_SH_FILENAME)
         return SubprocessExecutor(employee_id, script_path=script_path)
+    elif hosting == "omctalent":
+        runner = agent_cls() if agent_cls else None
+        if runner is None:
+            from onemancompany.agents.base import EmployeeAgent
+            runner = EmployeeAgent(employee_id)
+        return LangChainExecutor(runner)
     else:
         # Default: company → langchain
         runner = agent_cls() if agent_cls else None
@@ -3818,8 +3825,8 @@ async def switch_hosting(
         raise RuntimeError(f"Employee {employee_id} has a system task running, cannot switch")
 
     new_hosting = new_hosting.strip().lower()
-    if new_hosting not in ("company", "self", "openclaw"):
-        raise ValueError(f"Invalid hosting: {new_hosting}. Must be company, self, or openclaw.")
+    if new_hosting not in ("company", "omctalent", "self", "openclaw"):
+        raise ValueError(f"Invalid hosting: {new_hosting}. Must be company, omctalent, self, or openclaw.")
 
     emp_dir = EMPLOYEES_DIR / employee_id
     executor = _create_executor_for_hosting(new_hosting, employee_id, agent_cls, emp_dir)

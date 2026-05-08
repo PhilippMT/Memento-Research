@@ -3991,7 +3991,7 @@ class AppController {
         const costPer1m = esc(c.cost_per_1m_tokens ? `$${Number(c.cost_per_1m_tokens).toFixed(2)}/1M` : (c.salary_per_1m_tokens ? `$${Number(c.salary_per_1m_tokens).toFixed(2)}/1M` : 'N/A'));
         const hiringFee = esc(c.hiring_fee != null ? `$${Number(c.hiring_fee).toFixed(2)}` : 'Free');
         const hosting = c.hosting || 'company';
-        const familyLabels = { company: '🧠 LangChain', self: '🤖 Claude', openclaw: '🦞 OpenClaw' };
+        const familyLabels = { company: '🧠 LangChain', omctalent: '🧠 OMC Talent', self: '🤖 Claude', openclaw: '🦞 OpenClaw' };
         const hostingLabel = esc(familyLabels[hosting] || hosting);
         const authLabel = esc(c.auth_method === 'oauth' ? 'OAuth' : 'API Key');
 
@@ -4096,7 +4096,7 @@ class AppController {
     const costPer1m = esc(c.cost_per_1m_tokens ? `$${Number(c.cost_per_1m_tokens).toFixed(2)}/1M` : (c.salary_per_1m_tokens ? `$${Number(c.salary_per_1m_tokens).toFixed(2)}/1M` : 'N/A'));
     const hiringFee = esc(c.hiring_fee != null ? `$${Number(c.hiring_fee).toFixed(2)}` : 'Free');
     const hosting = c.hosting || 'company';
-    const familyLabels = { company: '🧠 LangChain', self: '🤖 Claude', openclaw: '🦞 OpenClaw' };
+    const familyLabels = { company: '🧠 LangChain', omctalent: '🧠 OMC Talent', self: '🤖 Claude', openclaw: '🦞 OpenClaw' };
     const hostingLabel = esc(familyLabels[hosting] || hosting);
     const authLabel = esc(c.auth_method === 'oauth' ? 'OAuth' : 'API Key');
     const reasoning = c.reasoning || '';

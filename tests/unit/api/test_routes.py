@@ -6208,6 +6208,9 @@ class TestCheckTalentRequiredFields:
     def test_complete_company_profile(self):
         assert self._check({"hosting": "company", "llm_model": "gpt-4o", "api_provider": "openrouter", "auth_method": "api_key"}) == []
 
+    def test_complete_omctalent_profile(self):
+        assert self._check({"hosting": "omctalent", "llm_model": "gpt-4o", "api_provider": "openrouter", "auth_method": "api_key"}) == []
+
     def test_complete_self_profile(self):
         assert self._check({"hosting": "self"}) == []
 

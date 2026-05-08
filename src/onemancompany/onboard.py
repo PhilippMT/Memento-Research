@@ -85,7 +85,7 @@ LOGO = r"""
 
 TOTAL_STEPS = 6
 
-HOSTING_LABELS = {"company": "LangChain", "self": "Claude Code", "openclaw": "OpenClaw"}
+HOSTING_LABELS = {"company": "LangChain", "omctalent": "OMC Talent", "self": "Claude Code", "openclaw": "OpenClaw"}
 
 # InquirerPy theme — cyberpunk neon
 from InquirerPy.utils import InquirerPyStyle as _IStyle

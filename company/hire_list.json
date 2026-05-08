@@ -7,7 +7,7 @@
     "role": "Researcher",
     "description": "Research specialist that builds offline corpora of arXiv papers, extracts structured claims, detects contradictions and setting-mismatches across papers, and proposes new testable methods grounded in authors' acknowledged limitations and future-work suggestions.",
     "agent_family": "omctalent",
-    "hosting": "self",
+    "hosting": "omctalent",
     "auth_method": "api_key",
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",

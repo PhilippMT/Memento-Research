@@ -173,12 +173,14 @@ class TestHostingLabels:
     def test_all_hosting_modes_have_labels(self):
         from onemancompany.onboard import HOSTING_LABELS
         assert "company" in HOSTING_LABELS
+        assert "omctalent" in HOSTING_LABELS
         assert "self" in HOSTING_LABELS
         assert "openclaw" in HOSTING_LABELS
 
     def test_labels_are_human_readable(self):
         from onemancompany.onboard import HOSTING_LABELS
         assert HOSTING_LABELS["company"] == "LangChain"
+        assert HOSTING_LABELS["omctalent"] == "OMC Talent"
         assert HOSTING_LABELS["self"] == "Claude Code"
         assert HOSTING_LABELS["openclaw"] == "OpenClaw"
 
@@ -201,6 +203,11 @@ class TestCreateExecutorForHosting:
     def test_company_returns_langchain(self):
         from onemancompany.core.vessel import _create_executor_for_hosting, LangChainExecutor
         executor = _create_executor_for_hosting("company", "00002", MagicMock, Path("/tmp"))
+        assert isinstance(executor, LangChainExecutor)
+
+    def test_omctalent_returns_langchain(self):
+        from onemancompany.core.vessel import _create_executor_for_hosting, LangChainExecutor
+        executor = _create_executor_for_hosting("omctalent", "00002", MagicMock, Path("/tmp"))
         assert isinstance(executor, LangChainExecutor)
 
     def test_self_returns_claude_session(self):

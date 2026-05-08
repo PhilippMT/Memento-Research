@@ -33,6 +33,7 @@ from typing import Any
 class HostingMode(str, Enum):
     """Employee hosting mode (also serves as agent family selector)."""
     COMPANY = "company"     # Company-hosted: platform-internal LangChain agent loop
+    OMCTALENT = "omctalent" # OneManCompany talent: platform-internal agent loop
     SELF = "self"           # Self-hosted: Claude Code CLI sessions
     OPENCLAW = "openclaw"   # Company-hosted: OpenClaw subprocess via launch.sh
     REMOTE = "remote"       # Remote: receives tasks via HTTP polling

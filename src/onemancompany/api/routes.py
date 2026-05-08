@@ -2007,15 +2007,15 @@ async def update_employee_model(employee_id: str, body: dict) -> dict:
 async def update_employee_hosting(employee_id: str, body: dict) -> dict:
     """Switch an employee's hosting mode (agent family) with live hot-swap.
 
-    Supported values: company (LangChain), self (Claude Code), openclaw.
+    Supported values: company (LangChain), omctalent (OMC Talent), self (Claude Code), openclaw.
     Employee must be idle. No server restart required.
     """
     from onemancompany.core.config import FOUNDING_IDS, employee_configs
     from onemancompany.core.vessel import switch_hosting
 
     new_hosting = body.get("hosting", "").strip().lower()
-    if new_hosting not in (HostingMode.COMPANY, HostingMode.SELF, HostingMode.OPENCLAW):
-        raise HTTPException(status_code=400, detail="Invalid hosting. Must be company, self, or openclaw.")
+    if new_hosting not in (HostingMode.COMPANY, HostingMode.OMCTALENT, HostingMode.SELF, HostingMode.OPENCLAW):
+        raise HTTPException(status_code=400, detail="Invalid hosting. Must be company, omctalent, self, or openclaw.")
 
     emp = _require_employee(employee_id)
     cfg = employee_configs.get(employee_id)
@@ -2087,7 +2087,7 @@ async def update_employee_hosting(employee_id: str, body: dict) -> dict:
         write_text_utf(manifest_path, _json.dumps(manifest, indent=2, ensure_ascii=False))
         invalidate_manifest_cache(employee_id)
 
-    hosting_labels = {"company": "LangChain", "self": "Claude Code", "openclaw": "OpenClaw"}
+    hosting_labels = {"company": "LangChain", "omctalent": "OMC Talent", "self": "Claude Code", "openclaw": "OpenClaw"}
     label = hosting_labels.get(new_hosting, new_hosting)
 
     await event_bus.publish(
