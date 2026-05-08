@@ -514,6 +514,8 @@ async def ceo_submit_task(
     project_name: str = Form(""),
     product_id: str = Form(""),
     mode: str = Form("standard"),
+    start_stage: int = Form(1),
+    end_stage: int = Form(9),
     stage_assignments: str = Form(""),
     files: list[UploadFile] = File(default=[]),
 ) -> dict:
@@ -572,94 +574,75 @@ async def ceo_submit_task(
 
     ctx_id = f"{pid}/{iter_id}" if iter_id else pid
 
-    # Build attachment info string for EA
-    attach_info = ""
-    if attachments:
-        lines = [f"- Attachment: {a['filename']} (saved at {a['path']})" for a in attachments]
-        attach_info = "\n\nCEO attached the following files:\n" + "\n".join(lines)
+    # Initialize task tree and start pipeline engine
+    try:
+        from onemancompany.core.task_tree import TaskTree, evict_tree
+        from onemancompany.core.vessel import _save_project_tree
+        from onemancompany.core.pipeline_engine import PipelineEngine
 
-    # Build stage assignment hints for EA
-    assign_info = ""
-    if stage_assignments:
-        try:
-            import json
-            assignments = json.loads(stage_assignments)
-            if assignments:
-                lines = [f"- Stage {sid}: assign to employee {eid}" for sid, eid in assignments.items()]
-                assign_info = (
-                    "\n\nCEO has specified employee preferences for pipeline stages. "
-                    "You MUST dispatch these stages to the specified employees:\n" + "\n".join(lines)
-                )
-        except (json.JSONDecodeError, AttributeError):
-            logger.warning("Invalid stage_assignments JSON: {}", stage_assignments)
+        tree_path = Path(pdir) / TASK_TREE_FILENAME
 
-    loop = get_agent_loop(EA_ID)
-    if loop:
-        ea_task = (
-            f"CEO has assigned a new task. Please analyze and dispatch to the appropriate owner:\n\n"
-            f"Task: {task}{attach_info}{assign_info}\n\n"
-            f"[Project ID: {ctx_id}] [Project workspace: {pdir}]"
-        )
-        # Initialize task tree: CEO node as root, EA as child
-        try:
-            from onemancompany.core.task_tree import TaskTree, evict_tree
-            from onemancompany.core.vessel import _save_project_tree
+        # For new iterations on existing projects: archive old tree
+        if iter_id and tree_path.exists():
             from onemancompany.core.agent_loop import employee_manager
+            from onemancompany.core.project_archive import load_named_project
+            meta = load_named_project(project_id) if project_id else {}
+            iters = meta.get("iterations", [])
+            if len(iters) >= 2:
+                prev_iter = iters[-2]
+                prev_project_id = f"{pid}/{prev_iter}"
+                cancelled = employee_manager.abort_project(prev_project_id)
+                if cancelled:
+                    logger.info("Cancelled {} tasks from old iteration {}", cancelled, prev_project_id)
+                archive_name = f"task_tree_{prev_iter}.yaml"
+                archive_path = tree_path.parent / archive_name
+                if not archive_path.exists():
+                    import shutil
+                    shutil.copy2(str(tree_path), str(archive_path))
+            evict_tree(tree_path)
 
-            tree_path = Path(pdir) / TASK_TREE_FILENAME
+        tree = TaskTree(project_id=ctx_id, mode=mode)
+        # CEO root node
+        ceo_root = tree.create_root(employee_id=CEO_ID, description=task)
+        ceo_root.node_type = NodeType.CEO_PROMPT
+        ceo_root.set_status(TaskPhase.PROCESSING)
+        _save_project_tree(pdir, tree)
 
-            # For new iterations on existing projects: cancel old iteration + archive tree
-            if iter_id and tree_path.exists():
-                from onemancompany.core.project_archive import load_named_project
-                meta = load_named_project(project_id) if project_id else {}
-                iters = meta.get("iterations", [])
-                if len(iters) >= 2:
-                    prev_iter = iters[-2]
-                    prev_project_id = f"{pid}/{prev_iter}"
-                    # Cancel all running tasks from old iteration
-                    cancelled = employee_manager.abort_project(prev_project_id)
-                    if cancelled:
-                        logger.info("Cancelled {} tasks from old iteration {}", cancelled, prev_project_id)
-                    # Archive old tree
-                    archive_name = f"task_tree_{prev_iter}.yaml"
-                    archive_path = tree_path.parent / archive_name
-                    if not archive_path.exists():
-                        import shutil
-                        shutil.copy2(str(tree_path), str(archive_path))
-                        logger.info("Archived previous tree to {}", archive_name)
-                # Evict old tree from memory cache
-                evict_tree(tree_path)
+        # Create project conversation
+        from onemancompany.core.conversation import get_conversation_service
+        _conv_svc = get_conversation_service()
+        _conv = await _conv_svc.get_or_create_project_conversation(ctx_id, [CEO_ID])
+        await _conv_svc.push_system_message(_conv.id, f"Project created: {task[:100]}", source_employee="system")
 
-            tree = TaskTree(project_id=ctx_id, mode=mode)
-            # CEO root node — records original prompt
-            ceo_root = tree.create_root(employee_id=CEO_ID, description=task)
-            ceo_root.node_type = NodeType.CEO_PROMPT
-            ceo_root.set_status(TaskPhase.PROCESSING)
-            # EA node as child of CEO
-            ea_node = tree.add_child(
-                parent_id=ceo_root.id,
-                employee_id=EA_ID,
-                description=ea_task,
-                acceptance_criteria=[],
-            )
-            _save_project_tree(pdir, tree)
-            # Create project conversation
-            from onemancompany.core.conversation import get_conversation_service
-            _conv_svc = get_conversation_service()
-            _conv = await _conv_svc.get_or_create_project_conversation(ctx_id, [CEO_ID, EA_ID])
-            await _conv_svc.push_system_message(_conv.id, f"Project created: {task[:100]}", source_employee="system")
-            # Register CEO and EA in project team for project history
-            from onemancompany.agents.tree_tools import _add_to_project_team
-            _add_to_project_team(pdir, CEO_ID)
-            _add_to_project_team(pdir, EA_ID)
-            # Schedule EA node for execution
-            employee_manager.schedule_node(EA_ID, ea_node.id, str(tree_path))
-            employee_manager._schedule_next(EA_ID)
-        except Exception as e:
-            logger.error("Failed to initialize task tree: {}", e)
-    else:
-        logger.error("EA agent not registered in EmployeeManager — cannot dispatch task")
-        raise HTTPException(status_code=503, detail="EA agent not available")
+        # Read uploaded files as prior context
+        prior_context = ""
+        if attachments:
+            for a in attachments:
+                try:
+                    fpath = Path(a["path"])
+                    if fpath.exists() and fpath.stat().st_size < 500_000:
+                        prior_context += f"\n--- {a['filename']} ---\n{fpath.read_text(encoding='utf-8')}\n"
+                except Exception:
+                    pass
+
+        # Start pipeline engine
+        engine = PipelineEngine(ctx_id, str(pdir), task)
+        # Parse stage assignments
+        _assignments = {}
+        if stage_assignments:
+            try:
+                import json as _json2
+                _assignments = _json2.loads(stage_assignments)
+            except Exception:
+                pass
+
+        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments)
+
+    except Exception as e:
+        logger.error("Failed to start pipeline: {}", e)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Pipeline start failed: {e}")
     return {
         "routed_to": "EA",
         "status": "processing",
@@ -821,6 +804,91 @@ async def task_followup(project_id: str, body: dict) -> dict:
     )
 
     return {"status": "ok", "project_id": project_id}
+
+
+@router.post("/api/pipeline/resume")
+async def resume_pipeline_breakpoint(body: dict):
+    """Resume pipeline after a breakpoint.
+
+    Finds the HOLDING parent node with hold_reason 'breakpoint:stage_N'
+    and resumes it with optional CEO feedback.
+    """
+    from pathlib import Path
+    from onemancompany.core.task_tree import get_tree, save_tree_async
+    from onemancompany.core.agent_loop import employee_manager
+
+    project_id = body.get("project_id", "")
+    stage = body.get("stage")
+    feedback = body.get("feedback", "")
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="Missing project_id")
+
+    from onemancompany.core.project_archive import get_project_dir
+    pdir = str(get_project_dir(project_id))
+    tree_path = Path(pdir) / TASK_TREE_FILENAME
+    if not tree_path.exists():
+        raise HTTPException(status_code=404, detail="Task tree not found")
+
+    # Use PipelineEngine to handle the resume
+    from onemancompany.core.pipeline_engine import get_or_load_pipeline
+
+    engine = get_or_load_pipeline(project_id, pdir)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No active pipeline found for this project")
+
+    logger.info("[PIPELINE_RESUME] stage={} feedback={}", stage, feedback[:100] if feedback else "(none)")
+    engine.on_ceo_approve(feedback=feedback)
+
+    return {"status": "resumed", "stage": stage, "pipeline_stage": engine.current_stage, "phase": engine.phase}
+
+
+@router.get("/api/pipeline/{project_id}/status")
+async def pipeline_status(project_id: str):
+    """Get current pipeline state for a project."""
+    from onemancompany.core.pipeline_engine import get_or_load_pipeline, STAGES
+    from onemancompany.core.project_archive import get_project_dir
+
+    pdir = str(get_project_dir(project_id))
+    engine = get_or_load_pipeline(project_id, pdir) if pdir else None
+
+    if not engine:
+        return {"error": "No pipeline found", "stages": STAGES}
+
+    # Collect workspace files
+    ws_files = []
+    if pdir:
+        from pathlib import Path as _P
+        for f in sorted(_P(pdir).rglob("*")):
+            if f.is_file() and f.suffix in (".md", ".txt", ".json", ".yaml", ".yml", ".py", ".csv"):
+                rel = str(f.relative_to(pdir))
+                if rel.startswith("nodes/") or rel == "pipeline_state.yaml" or rel == "task_tree.yaml":
+                    continue
+                try:
+                    content = f.read_text(encoding="utf-8")
+                except Exception:
+                    content = ""
+                ws_files.append({
+                    "file_name": f.name,
+                    "file_path": rel,
+                    "full_path": str(f),
+                    "size": f.stat().st_size,
+                    "content": content,
+                    "type": "create",
+                })
+
+    return {
+        "current_stage": engine.current_stage,
+        "phase": engine.phase,
+        "retries": engine.state.get("retries", 0),
+        "topic": engine.topic,
+        "start_stage": engine.state.get("start_stage", 1),
+        "end_stage": engine.state.get("end_stage", 9),
+        "stage_results": engine.state.get("stage_results", {}),
+        "critic_result": engine.state.get("critic_result", None),
+        "stages": STAGES,
+        "workspace_files": ws_files,
+    }
 
 
 @router.post("/api/oneonone/chat")

@@ -8,7 +8,7 @@ from pathlib import Path
 from loguru import logger
 
 # Per-tool result max before persisting to disk (chars)
-DEFAULT_MAX_RESULT_SIZE = 30_000  # ~7.5K tokens
+DEFAULT_MAX_RESULT_SIZE = 500_000  # no practical limit for research outputs
 
 # Preview size returned to agent when result is persisted
 PREVIEW_SIZE = 2000  # first N chars shown as preview

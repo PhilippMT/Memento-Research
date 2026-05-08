@@ -39,18 +39,40 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .brand-name{font-family:var(--serif);font-size:1.15rem;font-weight:600;letter-spacing:-.02em}
 .lab-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--pill);background:var(--gold-subtle);border:1px solid var(--gold);font-family:var(--mono);font-size:.65rem;font-weight:600;color:var(--text3);letter-spacing:.05em;text-transform:uppercase}
 
-/* Director */
-.director-card{margin:0 16px 16px;padding:14px;background:var(--green-subtle);border:1px solid var(--border);border-radius:var(--r);position:relative}
-.director-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green);border-radius:3px 0 0 3px}
-.director-label{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.1em;color:var(--green);margin-bottom:4px;font-weight:600}
-.director-name{font-family:var(--serif);font-size:1rem;font-weight:600;margin-bottom:2px}
-.director-status{font-size:.75rem;color:var(--text3)}
+/* New project button */
+.btn-new-project{width:calc(100% - 24px);margin:0 12px 12px;padding:10px;border:1.5px dashed var(--border);border-radius:var(--r);background:none;color:var(--text3);font-family:var(--sans);font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-new-project:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
 
-/* Active agent status bar */
-.active-agent-bar{display:flex;align-items:center;gap:8px;padding:8px 16px;margin:0 0 8px;background:var(--green-subtle);border:1px solid var(--green);border-radius:var(--r);font-size:.78rem;font-weight:550;color:var(--green);position:sticky;top:0;z-index:10}
-.agent-pulse{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0}
-.active-agent-bar.reviewing{background:var(--gold-subtle);border-color:var(--gold);color:#8B7332}
-.active-agent-bar.reviewing .agent-pulse{background:var(--gold)}
+/* Range selector — click dot to toggle range, dropdown below for agent */
+.range-selector{display:flex;align-items:center;gap:0;max-width:660px;margin:0 auto 16px;padding:8px 12px;user-select:none}
+.rs-node{display:flex;flex-direction:column;align-items:center;gap:2px;position:relative;z-index:1}
+.rs-dot{width:28px;height:28px;border-radius:50%;background:var(--bg);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:.6rem;font-weight:700;color:var(--text4);transition:all .2s;cursor:pointer}
+.rs-dot:hover{border-color:var(--green);color:var(--green);transform:scale(1.1)}
+.rs-dot.selected{background:var(--green);border-color:var(--green);color:#fff}
+.rs-dot.in-range{background:var(--green-subtle);border-color:var(--green);color:var(--green)}
+.rs-dot.out-range{opacity:.3}
+.rs-label{font-family:var(--mono);font-size:.5rem;color:var(--text4);white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.rs-label.in-range{color:var(--green);font-weight:600}
+.rs-agent-btn{font-family:var(--mono);font-size:.45rem;color:var(--text3);background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px;cursor:pointer;white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;text-align:center;margin-top:1px;transition:all .12s}
+.rs-agent-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
+.rs-agent-btn.assigned{color:var(--green);border-color:var(--green);background:var(--green-subtle);font-weight:600}
+.rs-line{flex:1;height:2px;background:var(--border);min-width:4px;transition:background .2s}
+.rs-line.in-range{background:var(--green)}
+
+/* Pipeline progress bar (horizontal, in main area) */
+.pipeline-bar{max-width:720px;margin:0 auto 16px;padding:12px 16px;background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow-sm)}
+.pipeline-stages{display:flex;align-items:center;gap:0;margin-bottom:8px}
+.ps-stage{display:flex;align-items:center;flex:1;min-width:0}
+.ps-dot{width:20px;height:20px;border-radius:50%;background:var(--bg);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:.55rem;font-weight:700;color:var(--text4);flex-shrink:0;transition:all .3s;cursor:default}
+.ps-dot.done{background:var(--green);border-color:var(--green);color:#fff}
+.ps-dot.running{background:var(--white);border-color:var(--green);color:var(--green);box-shadow:0 0 0 3px rgba(36,90,64,.15);animation:pulse-dot 1.5s ease-in-out infinite}
+.ps-dot.gate{background:var(--gold);border-color:var(--gold);color:#fff}
+.ps-dot.failed{background:var(--coral);border-color:var(--coral);color:#fff}
+.ps-line{flex:1;height:2px;background:var(--border);margin:0 2px;transition:background .3s}
+.ps-line.done{background:var(--green)}
+.ps-dot.skipped{opacity:.3;border-style:dashed}
+.ps-line.skipped{opacity:.3;border-style:dashed}
+.pipeline-status{font-family:var(--mono);font-size:.7rem;color:var(--text3);text-align:center}
 .conn-status{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:.7rem;color:var(--text4)}
 .conn-dot{width:7px;height:7px;border-radius:50%;background:var(--coral)}
 .conn-status.connected .conn-dot{background:var(--green)}
@@ -132,7 +154,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .btn-launch:disabled{opacity:.5;cursor:not-allowed;transform:none}
 
 /* ══ STAGE STREAM ══ */
-.meetings{max-width:720px;margin:0 auto;overflow-y:auto;max-height:calc(100vh - 300px);padding:8px 0;scroll-behavior:smooth}
+.meetings{max-width:720px;margin:0 auto;overflow-y:auto;max-height:calc(100vh - 120px);padding:8px 0;scroll-behavior:smooth;transition:max-height .2s ease,padding-bottom .2s ease}
 
 /* Notice bar (system/director inline message) */
 .notice{display:flex;align-items:center;gap:8px;padding:6px 14px;margin:6px 0;font-size:.78rem;color:var(--text3);animation:fadeIn .3s ease}
@@ -391,53 +413,44 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 </head>
 <body>
 <div class="app">
-  <!-- ══ SIDEBAR ══ -->
+  <!-- ══ SIDEBAR — Project Manager ══ -->
   <aside class="sidebar">
     <div class="sidebar-head">
       <div class="brand">
         <div class="brand-icon"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
         <span class="brand-name">AutoResearch</span>
       </div>
-      <div class="lab-badge"><span style="width:5px;height:5px;border-radius:50%;background:var(--gold)"></span> OMC Research Lab</div>
-    </div>
-
-    <div class="director-card">
-      <div class="director-label">Research Director</div>
-      <div class="director-name">Dr. Pipeline</div>
-      <div class="director-status" id="dirStatus">Idle</div>
       <div class="conn-status" id="connStatus"><span class="conn-dot"></span><span class="conn-label">Offline</span></div>
     </div>
-
-    <div class="section-label">Pipeline Stages</div>
-    <div class="stage-list" id="stageList"></div>
-
-    <div class="projects">
-      <div class="section-label">Projects</div>
-      <div id="projectList"><div class="proj-empty">No projects yet</div></div>
-    </div>
+    <button class="btn-new-project" id="btnNewProject" onclick="document.getElementById('heroSection').style.display='';document.getElementById('pipelineBar').style.display='none';document.getElementById('meetingsArea').innerHTML=''">+ New Research</button>
+    <div id="projectList"><div class="proj-empty">No projects yet</div></div>
   </aside>
 
   <!-- ══ MAIN ══ -->
   <main class="main">
     <div id="heroSection">
       <div class="hero">
-        <div class="hero-pill"><span style="width:5px;height:5px;border-radius:50%;background:var(--gold)"></span> Adversarial Research Pipeline</div>
         <h1>What should we investigate?</h1>
-        <p>Describe a research direction. Set breakpoints on stages where you want to review and intervene before the pipeline continues.</p>
+        <p>Describe a research direction. Each stage produces a deliverable, reviewed by an adversarial critic, then approved by you before advancing.</p>
       </div>
+      <!-- Stage range selector — click to set start, click again to set end -->
+      <div class="range-selector" id="rangeSelector"></div>
       <div class="input-card">
         <textarea class="input-field" id="topicInput" placeholder="e.g. Explore whether combining sparse attention with mixture-of-experts routing can achieve sub-quadratic scaling..." rows="2"></textarea>
         <div class="config-row">
-          <div class="config-group"><label class="config-label">Model</label><select class="config-select"><option>Claude Opus 4.6</option><option>GPT-4o</option><option>DeepSeek R1</option></select></div>
-          <div class="config-group"><label class="config-label">Template</label><select class="config-select"><option>NeurIPS 2026</option><option>ICML 2026</option><option>arXiv</option></select></div>
-          <div class="config-group"><label class="config-label">Critic</label><select class="config-select"><option>Strict</option><option>Balanced</option><option>Gentle</option></select></div>
+          <label class="config-group" style="cursor:pointer">
+            <span class="config-label">Context Files</span>
+            <input type="file" id="contextFiles" multiple style="display:none" onchange="document.getElementById('fileLabel').textContent=this.files.length+' file(s)'">
+            <span class="config-select" id="fileLabel" style="min-width:80px;text-align:center" onclick="document.getElementById('contextFiles').click()">Upload</span>
+          </label>
           <button class="btn-launch" id="launchBtn" onclick="const t=document.getElementById('topicInput').value.trim();if(t&&window.launchPipeline){window.launchPipeline(t)}">Launch Pipeline</button>
         </div>
       </div>
     </div>
-    <div class="active-agent-bar" id="activeAgentBar" style="display:none">
-      <span class="agent-pulse"></span>
-      <span class="agent-bar-label" id="activeAgentLabel">Idle</span>
+    <!-- Pipeline progress bar — driven by backend events -->
+    <div class="pipeline-bar" id="pipelineBar" style="display:none">
+      <div class="pipeline-stages" id="pipelineStages"></div>
+      <div class="pipeline-status" id="pipelineStatus"></div>
     </div>
     <div class="meetings" id="meetingsArea"></div>
   </main>
@@ -569,7 +582,6 @@ function switchProject(pid) {
   if (hero && proj.stagesHtml) hero.style.display = 'none';
   else if (hero && !proj.stagesHtml) hero.style.display = '';
 
-  document.getElementById('dirStatus').textContent = proj.status === 'completed' ? 'Completed' : 'Pipeline running...';
 
   // Replay any buffered events that arrived while this project was in the background
   if (typeof replayBufferedEvents === 'function') replayBufferedEvents(pid);
@@ -661,105 +673,155 @@ Object.defineProperty(window, '_activeProjectId', {
   set(v) { _activeProjectId = v; },
 });
 
-function renderStages(){
-  const el=document.getElementById('stageList');
-  el.innerHTML=STAGES.map((s,i)=>`
-    <div class="stage-row" data-id="${s.id}" id="sr-${s.id}">
-      <div class="bp-toggle ${s.bp?'set':''}" title="Toggle breakpoint" onclick="event.stopPropagation();toggleBP(${s.id})"></div>
-      <div class="stage-dot" id="sd-${s.id}"></div>
-      <div class="stage-info">
-        <div class="stage-name">${s.name}</div>
-        <select class="stage-agent" id="sa-${s.id}" onchange="assignAgent(${s.id},this.value)" onclick="event.stopPropagation()">
-          <option value="">Auto</option>
-        </select>
-        <div class="stage-meta" id="sm-${s.id}" style="display:none">Pending</div>
-      </div>
-      <div class="stage-actions">
-        <button class="stage-act-btn rerun" title="Run from here" onclick="event.stopPropagation();runFrom(${s.id})">&#8635;</button>
-      </div>
-    </div>
-    ${i<STAGES.length-1?'<div class="stage-connector" id="sc-'+(i+1)+'"></div>':''}
-  `).join('');
-}
+// ── Pipeline Progress Bar (backend-driven) ──
 
-function populateAgentSelectors(){
-  if(!window._employees)return;
-  STAGES.forEach(s=>{
-    const sel=document.getElementById('sa-'+s.id);
-    if(!sel)return;
-    const cur=sel.value;
-    sel.innerHTML='<option value="">Auto</option>';
-    window._employees.forEach(emp=>{
-      const opt=document.createElement('option');
-      opt.value=emp.employee_number;
-      opt.textContent=emp.name+(emp.role?' ('+emp.role+')':'');
-      sel.appendChild(opt);
-    });
-    if(cur)sel.value=cur;
-  });
-}
+let _pipelineStart = 1, _pipelineEnd = 9;
 
-function assignAgent(stageId,empNum){
-  STAGES[stageId-1].assignee=empNum||null;
-  if(empNum&&window._employees){
-    const emp=window._employees.find(e=>e.employee_number===empNum);
-    if(emp)addEvent('stag',`Stage ${stageId} assigned to ${emp.name}`);
-  }else{
-    addEvent('stag',`Stage ${stageId} set to Auto (Research Director assigns)`);
+function renderPipelineBar(){
+  const el=document.getElementById('pipelineStages');
+  if(!el)return;
+  el.innerHTML=STAGES.map((s,i)=>{
+    const inRange = s.id >= _pipelineStart && s.id <= _pipelineEnd;
+    const skipped = !inRange ? ' skipped' : '';
+    const dot=`<div class="ps-dot${skipped}" id="ps-${s.id}" title="${s.name}">${s.id}</div>`;
+    const line=i<STAGES.length-1?`<div class="ps-line${!inRange && s.id >= _pipelineEnd ? ' skipped' : ''}" id="pl-${s.id}"></div>`:'';
+    return `<div class="ps-stage">${dot}${line}</div>`;
+  }).join('');
+  // Show range info
+  const statusEl=document.getElementById('pipelineStatus');
+  if(statusEl){
+    const startName=STAGES[_pipelineStart-1]?.name||'';
+    const endName=STAGES[_pipelineEnd-1]?.name||'';
+    if(_pipelineStart===1 && _pipelineEnd===9){
+      statusEl.textContent='Full pipeline (Stage 1–9)';
+    } else {
+      statusEl.textContent=`Stage ${_pipelineStart} (${startName}) → Stage ${_pipelineEnd} (${endName})`;
+    }
   }
-}
-
-function getStageAssignments(){
-  const map={};
-  let hasAny=false;
-  STAGES.forEach(s=>{
-    if(s.assignee){map[s.id]=s.assignee;hasAny=true;}
-  });
-  return hasAny?map:null;
-}
-
-function toggleBP(id){
-  const s=STAGES[id-1];
-  s.bp=!s.bp;
-  document.querySelector(`#sr-${id} .bp-toggle`).classList.toggle('set',s.bp);
-  addEvent('stag',`Breakpoint ${s.bp?'set':'removed'} on Stage ${id}: ${s.name}`);
 }
 
 function setStage(id,status){
-  const dot=document.getElementById('sd-'+id);
-  const meta=document.getElementById('sm-'+id);
-  const agentSel=document.getElementById('sa-'+id);
-  dot.className='stage-dot '+(status==='done'?'done':status==='running'?'running':status==='reviewing'?'reviewing':status==='paused'?'paused':status==='failed'?'failed':'');
-  meta.textContent={done:'Complete',running:'Running...',reviewing:'Reviewing...',paused:'Paused',failed:'Rejected',pending:'Pending'}[status]||status;
-  if(status==='pending'){
-    if(agentSel)agentSel.style.display='';
-    meta.style.display='none';
-  }else{
-    if(agentSel)agentSel.style.display='none';
-    meta.style.display='';
+  const dot=document.getElementById('ps-'+id);
+  if(!dot)return;
+  dot.className='ps-dot '+(status||'');
+  // Update connector lines
+  for(let i=_pipelineStart;i<id;i++){
+    const line=document.getElementById('pl-'+i);
+    if(line)line.className='ps-line done';
   }
-  // Update active agent bar
-  const bar = document.getElementById('activeAgentBar');
-  const label = document.getElementById('activeAgentLabel');
-  const stageName = STAGES[id-1] ? STAGES[id-1].name : `Stage ${id}`;
-  if (status === 'running') {
-    bar.style.display = 'flex'; bar.className = 'active-agent-bar';
-    label.textContent = `Stage ${id}: ${stageName} — Running`;
-  } else if (status === 'reviewing') {
-    bar.style.display = 'flex'; bar.className = 'active-agent-bar reviewing';
-    label.textContent = `Stage ${id}: ${stageName} — Awaiting Critic Review`;
-  } else if (status === 'done' || status === 'failed') {
-    bar.style.display = 'none';
+  // Update status text
+  const statusEl=document.getElementById('pipelineStatus');
+  if(statusEl){
+    const stageName=STAGES[id-1]?STAGES[id-1].name:`Stage ${id}`;
+    const labels={done:'Complete',running:'Running...',gate:'Waiting for approval',failed:'Rejected',reviewing:'Critic reviewing...'};
+    statusEl.textContent=`Stage ${id}: ${stageName} — ${labels[status]||status}`;
   }
 }
 
-function runFrom(id){
-  addEvent('dtag',`User requested: run from Stage ${id}`);
-  // In real app, reset stages id+ and re-run
+// Show pipeline bar when a project is active
+function showPipelineBar(start, end){
+  if(start) _pipelineStart = start;
+  if(end) _pipelineEnd = end;
+  const bar=document.getElementById('pipelineBar');
+  if(bar)bar.style.display='';
+  renderPipelineBar();
 }
 
-// addEvent is now a no-op — events panel replaced by workspace
+// ── Range Selector — click dot for range, dropdown button for agent ──
+let _rangeStart = 1, _rangeEnd = 9, _rangeClickState = 0;
+const _stageAssignments = {};
+
+function _renderRangeSelector() {
+  const el = document.getElementById('rangeSelector');
+  if (!el) return;
+  let html = '';
+  STAGES.forEach((s, i) => {
+    const isStart = s.id === _rangeStart;
+    const isEnd = s.id === _rangeEnd;
+    const inRange = s.id >= _rangeStart && s.id <= _rangeEnd;
+    const dotClass = (isStart || isEnd) ? 'selected' : inRange ? 'in-range' : 'out-range';
+    const labelClass = inRange ? ' in-range' : '';
+    const assigned = _stageAssignments[s.id];
+    const agentName = assigned && window._employees
+      ? (window._employees.find(e => e.employee_number === assigned)?.name || 'Custom')
+      : 'Auto';
+    const btnClass = assigned ? ' assigned' : '';
+
+    html += `<div class="rs-node">`;
+    html += `<div class="rs-dot ${dotClass}" onclick="_onRangeClick(${s.id})">${s.id}</div>`;
+    html += `<div class="rs-label${labelClass}">${s.name}</div>`;
+    html += `<div class="rs-agent-btn${btnClass}" onclick="_showAgentPicker(${s.id},event)">▾ ${_escHtml(agentName)}</div>`;
+    html += `</div>`;
+    if (i < STAGES.length - 1) {
+      const lineClass = inRange && s.id < _rangeEnd ? 'in-range' : '';
+      html += `<div class="rs-line ${lineClass}"></div>`;
+    }
+  });
+  el.innerHTML = html;
+}
+
+function _onRangeClick(id) {
+  if (_rangeClickState === 0) {
+    _rangeStart = id;
+    _rangeEnd = id;
+    _rangeClickState = 1;
+  } else {
+    if (id >= _rangeStart) {
+      _rangeEnd = id;
+    } else {
+      _rangeEnd = _rangeStart;
+      _rangeStart = id;
+    }
+    _rangeClickState = 0;
+  }
+  _renderRangeSelector();
+}
+
+function _showAgentPicker(stageId, event) {
+  // Remove any existing picker
+  document.getElementById('agentPicker')?.remove();
+  if (!window._employees) return;
+
+  const picker = document.createElement('div');
+  picker.id = 'agentPicker';
+  picker.style.cssText = `position:fixed;z-index:400;background:var(--white);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow-lg);padding:4px 0;min-width:180px;max-height:240px;overflow-y:auto;left:${event.clientX}px;top:${event.clientY}px`;
+
+  // Auto option
+  picker.innerHTML = `<div class="ap-item" onclick="_assignStageAgent(${stageId},'')" style="padding:6px 12px;cursor:pointer;font-size:.78rem;color:var(--text3)">Auto (by skill)</div>`;
+
+  window._employees.forEach(emp => {
+    const selected = _stageAssignments[stageId] === emp.employee_number ? ' style="padding:6px 12px;cursor:pointer;font-size:.78rem;background:var(--green-subtle);color:var(--green);font-weight:600"' : ' style="padding:6px 12px;cursor:pointer;font-size:.78rem"';
+    picker.innerHTML += `<div${selected} onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''" onclick="_assignStageAgent(${stageId},'${emp.employee_number}')">${_escHtml(emp.name)} <span style="color:var(--text4);font-size:.65rem">${emp.role||''}</span></div>`;
+  });
+
+  document.body.appendChild(picker);
+  // Close on click outside
+  setTimeout(() => document.addEventListener('click', function _close() {
+    picker.remove();
+    document.removeEventListener('click', _close);
+  }), 10);
+}
+
+function _assignStageAgent(stageId, empNum) {
+  if (empNum) {
+    _stageAssignments[stageId] = empNum;
+  } else {
+    delete _stageAssignments[stageId];
+  }
+  document.getElementById('agentPicker')?.remove();
+  _renderRangeSelector();
+}
+
+window._getRangeStart = () => _rangeStart;
+window._getRangeEnd = () => _rangeEnd;
+window._getStageAssignments = () => Object.keys(_stageAssignments).length > 0 ? {..._stageAssignments} : null;
+
+_renderRangeSelector();
+
+// Legacy compat
 function addEvent(){}
+function populateAgentSelectors(){}
+function getStageAssignments(){return null;}
 
 // ── Workspace file panel ──
 const _wsFiles = new Map(); // fileName → {path, size, type, time, fullPath}
@@ -1159,10 +1221,13 @@ function _syncMeetingsPadding() {
   const meetings = document.getElementById('meetingsArea');
   if (!meetings) return;
   if (panel) {
-    meetings.style.paddingBottom = panel.offsetHeight + 16 + 'px';
+    const ph = panel.offsetHeight;
+    meetings.style.paddingBottom = ph + 16 + 'px';
+    meetings.style.maxHeight = `calc(100vh - 120px - ${ph + 16}px)`;
     _scroll();
   } else {
     meetings.style.paddingBottom = '';
+    meetings.style.maxHeight = '';
   }
 }
 
@@ -1184,19 +1249,14 @@ function addActionBar(card,stageId){
   panel.innerHTML=`
     <div class="ap-header">
       <div class="ap-title"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="4" height="12" rx="1"/><rect x="9" y="2" width="4" height="12" rx="1"/></svg> Stage ${stageId}: ${stageName}</div>
-      <button class="ap-approve" id="ap-approve-btn">Approve &amp; Continue &rarr;</button>
-    </div>
-    <div class="ap-tabs">
-      <button class="ap-tab active" data-tab="edit">Edit Output</button>
-      <button class="ap-tab" data-tab="instruct">Add Instructions</button>
-      <button class="ap-tab" data-tab="override">Override Critic</button>
-      <button class="ap-tab" data-tab="skip">Skip Stages</button>
-      <button class="ap-tab" data-tab="artifacts">Artifacts</button>
-      <button class="ap-tab" data-tab="export">Export</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="ap-approve" id="ap-revise-btn" style="background:var(--gold);animation:none">&#8635; Request Revision</button>
+        <button class="ap-approve" id="ap-approve-btn">Approve &amp; Continue &rarr;</button>
+      </div>
     </div>
     <div class="ap-body" id="ap-body">
-      <textarea class="ap-editor" id="ap-editor">${producerText}</textarea>
-      <div class="ap-hint">Edit the producer output directly. Changes will be passed to the next stage.</div>
+      <div class="ap-instruct-label">Optional: add feedback for revision or instructions for the next stage.</div>
+      <textarea class="ap-instruct" id="ap-feedback" placeholder="e.g. Novelty is not strong enough — differentiate more from Chen et al. 2025..."></textarea>
     </div>
   `;
   document.body.appendChild(panel);
@@ -1206,27 +1266,34 @@ function addActionBar(card,stageId){
   _apObserver.observe(panel);
   _syncMeetingsPadding();
 
-  // Tab switching
-  panel.querySelectorAll('.ap-tab').forEach(tab=>{
-    tab.addEventListener('click',function(){
-      panel.querySelectorAll('.ap-tab').forEach(t=>t.classList.remove('active'));
-      this.classList.add('active');
-      renderApTab(this.dataset.tab,stageId,producerText);
-    });
-  });
-
-  // Approve button
+  // Approve button — advance to next stage
   document.getElementById('ap-approve-btn').addEventListener('click',function(){
     this.textContent='Continuing...';
     this.disabled=true;
-    // Get optional feedback from instruct tab
-    const instructEl = document.querySelector('.ap-instruct');
-    const feedback = instructEl ? instructEl.value.trim() : '';
-    // Signal backend via controller
+    document.getElementById('ap-revise-btn').disabled=true;
+    const feedback = (document.getElementById('ap-feedback')?.value || '').trim();
     if (window._controller && window._controller.resumeBreakpoint) {
       window._controller.resumeBreakpoint(feedback);
     }
     resumePipeline();
+  });
+
+  // Revise button — re-run current stage with feedback
+  document.getElementById('ap-revise-btn').addEventListener('click',function(){
+    const feedbackEl = document.getElementById('ap-feedback');
+    const feedback = (feedbackEl?.value || '').trim();
+    if (!feedback) { feedbackEl?.focus(); feedbackEl?.classList.add('shake'); setTimeout(()=>feedbackEl?.classList.remove('shake'),500); return; }
+    this.textContent='Sending...';
+    this.disabled=true;
+    document.getElementById('ap-approve-btn').disabled=true;
+    // Send revision request — same as resume but with explicit "revise" instruction
+    const revisionFeedback = `[REVISION REQUESTED] CEO wants Stage ${stageId} revised: ${feedback}. Re-run this stage with the feedback above. Do NOT advance to the next stage.`;
+    if (window._controller && window._controller.resumeBreakpoint) {
+      window._controller.resumeBreakpoint(revisionFeedback);
+    }
+    removeActionBar();
+    postNotice(`Revision requested for Stage ${stageId}: ${feedback}`, 'info');
+    setStage(stageId, 'running');
   });
 }
 
@@ -1341,7 +1408,6 @@ async function startDemo(){
   const topic=document.getElementById('topicInput').value||'Sparse attention with mixture-of-experts routing';
   if(!document.getElementById('topicInput').value)document.getElementById('topicInput').value=topic;
 
-  document.getElementById('dirStatus').textContent='Running pipeline...';
 
   // ── Stage 1: Topic Refinement ──
   postNotice('Research Director received topic. Delegating Stage 1.','info');
@@ -1434,7 +1500,6 @@ async function startDemo(){
     setStage(3,'paused');
     postNotice('Breakpoint at Stage 3. Review the hypothesis before continuing.','info');
     addActionBar(null,3);
-    document.getElementById('dirStatus').textContent='Paused at Stage 3 — waiting for user';
     await waitForUser();
     removeActionBar();
     postNotice('User approved. Continuing pipeline.','ok');
@@ -1449,7 +1514,6 @@ async function startDemo(){
   document.getElementById('calR').textContent='1';
 
   await sleep(300);
-  document.getElementById('dirStatus').textContent='Demo complete. 3/9 stages shown.';
   postNotice('Remaining: 6 stages queued. Next: Methodology Designer.','info');
   postNotice('Demo complete. Connect OMC backend for full 9-stage pipeline.','info');
   btn.disabled=false;btn.textContent='Launch Pipeline';
@@ -1563,9 +1627,81 @@ window.openChatDialog = openChatDialog;
 window.closeChatDialog = closeChatDialog;
 window.isChatDialogOpen = () => !!_chatDialog;
 
-// Enter only inserts newline; submission via button only
+// ── Breakpoint Dialog (reuses chat-dialog style) ──
+let _bpDialog = null;
+let _bpStageId = null;
 
-renderStages();
+function openBreakpointDialog(stageId, stageName) {
+  closeChatDialog(); // close any existing chat
+  if (_bpDialog) _bpDialog.remove();
+  _bpStageId = stageId;
+
+  _bpDialog = document.createElement('div');
+  _bpDialog.className = 'chat-dialog';
+  _bpDialog.id = 'bpDialog';
+  _bpDialog.innerHTML = `
+    <div class="chat-dialog-head">
+      <div class="chat-dialog-avatar" style="background:var(--gold)">S${stageId}</div>
+      <div class="chat-dialog-title">Stage ${stageId}: ${_escHtml(stageName)}<small>completed — review required</small></div>
+    </div>
+    <div class="chat-dialog-messages" id="bpMessages">
+      <div class="chat-msg from-agent">
+        <div class="chat-bubble">
+          <div class="chat-sender">Pipeline</div>
+          Stage ${stageId} (${_escHtml(stageName)}) has passed critic review. Approve to continue, or request revision with feedback.
+        </div>
+      </div>
+    </div>
+    <div class="chat-dialog-input" style="flex-wrap:wrap;gap:6px">
+      <textarea id="bpFeedback" placeholder="Optional feedback or revision instructions..." rows="2" style="flex:1;min-width:200px;border:1.5px solid var(--border);border-radius:var(--pill);padding:8px 14px;font-family:var(--sans);font-size:.82rem;color:var(--text);background:var(--bg);outline:none;resize:vertical"></textarea>
+      <button class="chat-dialog-send" id="bpReviseBtn" style="background:var(--gold)">&#8635; Revise</button>
+      <button class="chat-dialog-send" id="bpApproveBtn">Approve &rarr;</button>
+    </div>`;
+
+  document.body.appendChild(_bpDialog);
+  // Push meetings area up so content isn't hidden behind dialog
+  const meetings = document.getElementById('meetingsArea');
+  if (meetings) {
+    meetings.style.paddingBottom = '320px';
+    meetings.scrollTop = meetings.scrollHeight;
+  }
+  document.getElementById('bpFeedback').focus();
+
+  document.getElementById('bpApproveBtn').onclick = () => {
+    const fb = document.getElementById('bpFeedback').value.trim();
+    if (window._controller) window._controller.resumeBreakpoint(fb, false);
+  };
+  document.getElementById('bpReviseBtn').onclick = () => {
+    const fb = document.getElementById('bpFeedback').value.trim();
+    if (!fb) { document.getElementById('bpFeedback').focus(); return; }
+    if (window._controller) window._controller.resumeBreakpoint(fb, true);
+  };
+  // Enter = newline in textarea (default behavior, no override)
+}
+
+function addBreakpointMessage(sender, text) {
+  const container = document.getElementById('bpMessages');
+  if (!container) return;
+  const el = document.createElement('div');
+  el.className = 'chat-msg from-agent';
+  el.innerHTML = `<div class="chat-bubble"><div class="chat-sender">${_escHtml(sender)}</div>${_renderMd(_clean(text))}</div>`;
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+}
+
+function closeBreakpointDialog() {
+  if (_bpDialog) { _bpDialog.remove(); _bpDialog = null; }
+  _bpStageId = null;
+  // Restore meetings area padding
+  const meetings = document.getElementById('meetingsArea');
+  if (meetings) meetings.style.paddingBottom = '';
+}
+
+window.openBreakpointDialog = openBreakpointDialog;
+window.addBreakpointMessage = addBreakpointMessage;
+window.closeBreakpointDialog = closeBreakpointDialog;
+
+renderPipelineBar();
 </script>
 <script type="module" src="src/main.js"></script>
 </body>

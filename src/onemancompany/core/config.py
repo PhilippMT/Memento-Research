@@ -344,7 +344,7 @@ DEFAULT_DEPARTMENT = "General"
 # ---------------------------------------------------------------------------
 # Prompt truncation limits (characters)
 # ---------------------------------------------------------------------------
-MAX_SUMMARY_LEN = 300
+MAX_SUMMARY_LEN = 50_000  # no truncation for research pipeline outputs
 MAX_PRINCIPLES_LEN = 400
 MAX_WORKFLOW_CONTEXT_LEN = 800
 MAX_DISCUSSION_SUMMARY_LEN = 500
@@ -589,6 +589,11 @@ class Settings(BaseSettings):
     port: int = 8000
     hr_review_interval_seconds: int = 300
     onboarding_timestamp: str = ""  # ISO 8601 timestamp of initial onboarding
+
+    # Pipeline breakpoints — comma-separated stage numbers (e.g. "3,9")
+    # When a gate review for Stage N completes and N is in this list,
+    # the parent director is held until CEO approves.
+    pipeline_breakpoints: str = "3,9"
 
 
 settings = Settings()

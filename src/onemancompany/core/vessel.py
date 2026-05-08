@@ -126,10 +126,44 @@ def _save_project_tree(project_dir: str, tree):
 
 
 # ---------------------------------------------------------------------------
-# Stall detection — detect unfulfilled action promises in agent output
+# Pipeline breakpoint helper
 # ---------------------------------------------------------------------------
 
 import re as _re
+
+
+def _extract_breakpoint_stage(node) -> int | None:
+    """If the completed node is a gate review for Stage N and N is a breakpoint, return N.
+
+    Only matches "Gate Review: Stage N" titles (critic finished), NOT
+    "Stage N: ..." titles (producer finished). This ensures the producer-critic
+    loop runs to completion before the user gate fires.
+    """
+    from onemancompany.core.config import settings
+    bp_str = getattr(settings, 'pipeline_breakpoints', '')
+    if not bp_str:
+        return None
+    try:
+        bp_set = {int(x.strip()) for x in bp_str.split(',') if x.strip().isdigit()}
+    except ValueError:
+        return None
+    if not bp_set:
+        return None
+
+    title = str(node.title or '') + ' ' + str(node.description or '')[:200]
+    # Only match gate reviews, not stage executions
+    m = _re.search(r'Gate\s+Review.*?Stage\s+(\d+)', title, _re.IGNORECASE)
+    if not m:
+        # Also match "Stage N" but ONLY if the title starts with "Gate Review"
+        # This prevents matching producer tasks like "Stage 3: Idea Generation"
+        return None
+    stage_num = int(m.group(1))
+    return stage_num if stage_num in bp_set else None
+
+
+# ---------------------------------------------------------------------------
+# Stall detection — detect unfulfilled action promises in agent output
+# ---------------------------------------------------------------------------
 
 # Patterns that indicate the agent is promising future actions it hasn't taken.
 # These are checked ONLY when the task completes WITHOUT dispatching children.
@@ -2513,6 +2547,30 @@ class EmployeeManager:
             await _store.save_project_status(project_id, ITER_STATUS_FAILED)
             return
 
+        # --- Pipeline engine check ---
+        # If this task is managed by the pipeline engine, route to it
+        # instead of normal gate/review logic. The engine handles everything.
+        if node.status in (TaskPhase.COMPLETED.value, TaskPhase.ACCEPTED.value, TaskPhase.FINISHED.value):
+            from onemancompany.core.pipeline_engine import get_or_load_pipeline
+            _node_meta = getattr(node, 'metadata', None) or {}
+            if _node_meta.get("pipeline_managed"):
+                _pdir = node.project_dir or str(Path(entry.tree_path).parent)
+                engine = get_or_load_pipeline(project_id, _pdir)
+                if engine:
+                    result = node.result or ""
+                    logger.info(
+                        "[PIPELINE] Task complete: employee={} node={} → routing to pipeline engine (stage={}, phase={})",
+                        employee_id, entry.node_id, engine.current_stage, engine.phase,
+                    )
+                    # Auto-accept the node so the tree stays clean
+                    if node.status == TaskPhase.COMPLETED.value:
+                        node.set_status(TaskPhase.ACCEPTED)
+                        node.acceptance_result = {"passed": True, "notes": "auto-accepted (pipeline engine)"}
+                        node.set_status(TaskPhase.FINISHED)
+                        save_tree_async(entry.tree_path)
+                    engine.on_task_complete(employee_id, entry.node_id, result)
+                    return  # Pipeline engine handles everything from here
+
         # --- Propagate upward: review / auto-complete parent ---
         # CEO prompt nodes are containers — they don't need review or auto-complete.
         # Their child (EA) completing is handled by the project completion check below.
@@ -2520,6 +2578,39 @@ class EmployeeManager:
         if parent_node and parent_node.is_ceo_node:
             logger.debug("[ON_CHILD_COMPLETE] parent {} is CEO node — skipping review/auto-complete", parent_node.id)
             parent_node = None  # Skip propagation, fall through to project completion check
+
+        # --- Pipeline breakpoint check ---
+        # If the completed node is a gate review at a breakpoint stage,
+        # hold the parent director and emit a breakpoint event for the frontend.
+        # This fires AFTER the critic review completes, not after the producer.
+        if parent_node and node.status in (TaskPhase.COMPLETED.value, TaskPhase.ACCEPTED.value, TaskPhase.FINISHED.value):
+            bp_stage = _extract_breakpoint_stage(node)
+            if bp_stage:
+                logger.info(
+                    "[BREAKPOINT] Stage {} gate review hit breakpoint — holding parent {} ({})",
+                    bp_stage, parent_node.id, parent_node.employee_id,
+                )
+                if parent_node.status == TaskPhase.PROCESSING.value:
+                    running = self._running_tasks.pop(parent_node.employee_id, None)
+                    if running and not running.done():
+                        running.cancel()
+                    parent_node.set_status(TaskPhase.HOLDING)
+                parent_node.hold_reason = f"breakpoint:stage_{bp_stage}"
+                save_tree_async(entry.tree_path)
+                self._publish_node_update(parent_node.employee_id, parent_node)
+                await event_bus.publish(CompanyEvent(
+                    type=EventType.STATE_SNAPSHOT,
+                    payload={
+                        "type": "breakpoint_hit",
+                        "stage": bp_stage,
+                        "project_id": project_id,
+                        "node_id": node.id,
+                        "parent_id": parent_node.id,
+                        "message": f"Stage {bp_stage} gate review complete. Waiting for user approval.",
+                    },
+                    agent=SYSTEM_AGENT,
+                ))
+                return  # Don't propagate — wait for CEO to resume
 
         # --- Auto-accept orphaned COMPLETED children after REVIEW finishes ---
         # MUST run BEFORE Gate 1/Gate 2 to prevent review spawn loop:

@@ -42,8 +42,13 @@ export class OmcClient {
     form.append('task', topic);
     if (config.projectName) form.append('project_name', config.projectName);
     form.append('mode', 'standard');
+    if (config.startStage) form.append('start_stage', String(config.startStage));
+    if (config.endStage) form.append('end_stage', String(config.endStage));
     if (config.stageAssignments) {
       form.append('stage_assignments', JSON.stringify(config.stageAssignments));
+    }
+    if (config.files && config.files.length > 0) {
+      for (const f of config.files) form.append('files', f);
     }
 
     const res = await fetch(`${this.baseUrl}/api/ceo/task`, { method: 'POST', body: form });
@@ -57,6 +62,11 @@ export class OmcClient {
 
   async listProjects() {
     const res = await fetch(`${this.baseUrl}/api/projects`);
+    return res.json();
+  }
+
+  async getPipelineStatus(projectId) {
+    const res = await fetch(`${this.baseUrl}/api/pipeline/${projectId}/status`);
     return res.json();
   }
 

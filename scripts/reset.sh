@@ -5,11 +5,10 @@
 #        ./scripts/reset.sh --start  — just start backend (no reset)
 set -euo pipefail
 
-OMC_DIR="/Users/yuzhengxu/projects/OneManCompany"
 AR_DIR="/Users/yuzhengxu/projects/autoresearch"
-DATA_DIR="$OMC_DIR/.onemancompany"
+DATA_DIR="$AR_DIR/.onemancompany"
 ENV_FILE="$AR_DIR/.env"
-PYTHON="$OMC_DIR/.venv/bin/python"
+PYTHON="$AR_DIR/.venv/bin/python"
 LOG="/tmp/omc-backend.log"
 PORT=8000
 
@@ -45,9 +44,11 @@ init_data() {
   mkdir -p "$DATA_DIR/company/business/projects"
   mkdir -p "$DATA_DIR/company/business/products"
 
-  # Copy .env and config.yaml (API keys, server config, talent market)
+  # Copy .env and config.yaml
   cp "$ENV_FILE" "$DATA_DIR/.env"
-  cp "$AR_DIR/.onemancompany/config.yaml" "$DATA_DIR/config.yaml" 2>/dev/null || true
+  if [ -f "$AR_DIR/config.yaml" ]; then
+    cp "$AR_DIR/config.yaml" "$DATA_DIR/config.yaml"
+  fi
 
   echo "Data initialized."
 }
@@ -60,7 +61,7 @@ start_backend() {
   fi
 
   echo "Starting backend..."
-  cd "$OMC_DIR"
+  cd "$AR_DIR"
   nohup "$PYTHON" -c "from onemancompany.main import run; run()" > "$LOG" 2>&1 &
   local pid=$!
   echo "Backend PID: $pid"
