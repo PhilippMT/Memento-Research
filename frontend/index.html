@@ -72,7 +72,17 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .ps-line.done{background:var(--green)}
 .ps-dot.skipped{opacity:.3;border-style:dashed}
 .ps-line.skipped{opacity:.3;border-style:dashed}
-.pipeline-status{font-family:var(--mono);font-size:.7rem;color:var(--text3);text-align:center}
+.pipeline-status{display:flex;align-items:center;justify-content:center;gap:8px;font-family:var(--mono);font-size:.75rem;color:var(--text3);padding:6px 12px;border-radius:var(--pill);transition:all .3s}
+.pipeline-status.st-running{background:var(--green-subtle);color:var(--green);border:1px solid var(--green)}
+.pipeline-status.st-running::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0}
+.pipeline-status.st-gate{background:var(--gold-subtle);color:#8B7332;border:1px solid var(--gold)}
+.pipeline-status.st-gate::before{content:'⏸';font-size:.7rem;flex-shrink:0}
+.pipeline-status.st-reviewing{background:var(--gold-subtle);color:#8B7332;border:1px solid var(--gold)}
+.pipeline-status.st-reviewing::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--gold);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0}
+.pipeline-status.st-done{background:var(--green-subtle);color:var(--green);border:1px solid var(--green)}
+.pipeline-status.st-done::before{content:'✓';font-size:.7rem;flex-shrink:0}
+.pipeline-status.st-failed{background:var(--coral-subtle);color:var(--coral);border:1px solid var(--coral)}
+.pipeline-status.st-failed::before{content:'✕';font-size:.7rem;flex-shrink:0}
 .conn-status{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:.7rem;color:var(--text4)}
 .conn-dot{width:7px;height:7px;border-radius:50%;background:var(--coral)}
 .conn-status.connected .conn-dot{background:var(--green)}
@@ -709,11 +719,13 @@ function setStage(id,status){
     const line=document.getElementById('pl-'+i);
     if(line)line.className='ps-line done';
   }
-  // Update status text
+  // Update status bar with color-coded state
   const statusEl=document.getElementById('pipelineStatus');
   if(statusEl){
     const stageName=STAGES[id-1]?STAGES[id-1].name:`Stage ${id}`;
-    const labels={done:'Complete',running:'Running...',gate:'Waiting for approval',failed:'Rejected',reviewing:'Critic reviewing...'};
+    const labels={done:'Complete',running:'Running...',gate:'Waiting for your approval',failed:'Rejected — retrying',reviewing:'Critic reviewing...'};
+    const stClass={done:'st-done',running:'st-running',gate:'st-gate',failed:'st-failed',reviewing:'st-reviewing'};
+    statusEl.className='pipeline-status '+(stClass[status]||'');
     statusEl.textContent=`Stage ${id}: ${stageName} — ${labels[status]||status}`;
   }
 }
