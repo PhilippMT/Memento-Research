@@ -33,7 +33,7 @@ configuration (use yaml under `company/`).
 
    The asset tool registry picks the manifest up from
    `company/assets/tools/memento/tool.yaml` and registers two tool
-   names: `store` and `recall`.
+   names: `memento_store` and `memento_recall`.
 
 2. Set the LLM env vars (any OpenAI-compatible endpoint works):
 
@@ -49,16 +49,16 @@ configuration (use yaml under `company/`).
 
    ```text
    You have a long-term memory. Two tools:
-   - recall(query, top_k=5): search prior sessions before answering
-     factual questions.
-   - store(turns): persist a finished session at end-of-task when
-     facts, decisions, or customer-specific values were captured.
+   - memento_recall(query, top_k=5): search prior sessions before
+     answering factual questions.
+   - memento_store(turns): persist a finished session at end-of-task
+     when facts, decisions, or customer-specific values were captured.
 
    Rules:
    - For factual recall ("what did we decide", "what is X for
-     customer Y"), call recall FIRST. Do not answer from prior
-     knowledge.
-   - When a task captures a fact, call store BEFORE the final
+     customer Y"), call memento_recall FIRST. Do not answer from
+     prior knowledge.
+   - When a task captures a fact, call memento_store BEFORE the final
      answer. Pass full turns including verbatim values (URLs, port
      numbers, names).
    ```
@@ -125,7 +125,7 @@ finalize runs, so a finalize crash never loses the raw turns.
     "session_id": "convE00006_sess1",
     "session_num": 1,
     "title": "Acme onboarding — SAML SSO",
-    "outcome": "complete",
+    "outcome": "completed",
     "edges_added": 0,
     "supersede_added": 0,
 }
@@ -136,8 +136,10 @@ On finalize failure, returns `{"status": "error", "message": "...", "session_num
 
 Hybrid retrieval over the active employee's prior sessions: vector
 similarity (Chroma) + BM25 lexical match + causal-chain BFS
-expansion (forward up to 5 hops, backward up to 2). `top_k` is
-clamped to `[1, 20]`. Returns at most `top_k` sessions.
+expansion (outgoing edges up to 5 hops, incoming edges up to 2;
+with edges stored `new -> old`, this is effectively backward up to
+5 hops and forward up to 2 in time). `top_k` is clamped to
+`[1, 20]`. Returns at most `top_k` sessions.
 
 **Output:**
 ```python

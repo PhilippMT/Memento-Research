@@ -1,10 +1,10 @@
 id: memento
 name: Memory
 description: >
-  Long-term cross-session memory. store(turns) persists a finished session
-  with key facts, decisions, and verbatim quotes; recall(query) searches
-  past sessions via vector + BM25 + causal-chain BFS and returns a markdown
-  context block with relevant prior session summaries. Each employee has
+  Long-term cross-session memory. memento_store(turns) persists a finished
+  session with key facts, decisions, and verbatim quotes; memento_recall(query)
+  searches past sessions via vector + BM25 + causal-chain BFS and returns a
+  markdown context block with relevant prior session summaries. Each employee has
   a private memory store; you cannot read or write another employee's
   memory.
 added_by: CEO

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -171,7 +172,7 @@ def _build_store_result(mem_root: Path, employee_id: str, session_num: int) -> d
     }
 
 
-@tool
+@tool("memento_store")
 def store(turns: list[dict]) -> dict:
     """Persist a finished session into your private long-term memory.
 
@@ -206,10 +207,14 @@ def store(turns: list[dict]) -> dict:
         return {"status": "error", "message": f"session write failed: {exc}"}
 
 
-    adapter = MemoryV4Adapter(
+    adapter_kwargs = dict(
         memory_root=mem_root,
         ablation=AblationFlags(reflect_synthesis=False),
     )
+    memento_model = os.environ.get("MEMENTO_MODEL")
+    if memento_model:
+        adapter_kwargs["model"] = memento_model
+    adapter = MemoryV4Adapter(**adapter_kwargs)
     conv = _build_conversation(sessions_dir, employee_id)
 
     try:
@@ -226,14 +231,14 @@ def store(turns: list[dict]) -> dict:
     return _build_store_result(mem_root, employee_id, session_num)
 
 
-@tool
+@tool("memento_recall")
 def recall(query: str, top_k: int = 5) -> dict:
     """Search your private long-term memory for sessions relevant to a query.
 
     Hybrid retrieval: vector similarity + BM25 lexical match + causal-chain
-    BFS expansion (forward up to 5 hops, backward up to 2). Returns a
-    markdown context block with the top-K session summaries, linked
-    decisions, and supersede notes.
+    BFS expansion (outgoing/prior-session links up to 5 hops, incoming/
+    newer-session links up to 2). Returns a markdown context block with the
+    top-K session summaries, linked decisions, and supersede notes.
 
     Args:
         query: natural-language question or topic.
@@ -267,11 +272,15 @@ def recall(query: str, top_k: int = 5) -> dict:
     # Use a broad retrieval window (>= 10) so the adapter's BFS seed pool
     # is large enough; trim returned ids to the caller's requested top_k.
     retrieve_k = max(top_k_int, 10)
-    adapter = MemoryV4Adapter(
+    adapter_kwargs = dict(
         memory_root=mem_root,
         top_k=retrieve_k,
         ablation=AblationFlags(reflect_synthesis=False),
     )
+    memento_model = os.environ.get("MEMENTO_MODEL")
+    if memento_model:
+        adapter_kwargs["model"] = memento_model
+    adapter = MemoryV4Adapter(**adapter_kwargs)
     conv = _build_conversation(sessions_dir, employee_id)
 
     try:
