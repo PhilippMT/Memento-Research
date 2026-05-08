@@ -191,15 +191,29 @@ class ToolRegistry:
                 logger.debug("No %s.py found in asset tool %s", folder_name, folder_name)
                 continue
 
-            # Import the module and collect BaseTool instances
+            # Import the module and collect BaseTool instances. Pass
+            # submodule_search_locations so the loaded module is treated
+            # as a package: any sibling subdirectory the tool ships
+            # (e.g. a vendored library) becomes available via relative
+            # import (`from .lib import ...`) from the tool's main file.
+            mod_name = f"asset_tool_{folder_name}"
             try:
                 spec = importlib.util.spec_from_file_location(
-                    f"asset_tool_{folder_name}", str(py_file)
+                    mod_name,
+                    str(py_file),
+                    submodule_search_locations=[str(entry)],
                 )
                 mod = importlib.util.module_from_spec(spec)
+                # Register before exec so relative imports inside the
+                # module (e.g. `from .memento_v4 import ...`) can find
+                # the parent package via sys.modules.
+                import sys as _sys
+                _sys.modules[mod_name] = mod
                 spec.loader.exec_module(mod)
             except Exception as exc:
-                logger.warning("Failed to import asset tool %s: %s", folder_name, exc)
+                import sys as _sys
+                _sys.modules.pop(mod_name, None)
+                logger.warning("Failed to import asset tool {}: {}", folder_name, exc)
                 continue
 
             # Extract allowed_users and allowed_roles from tool.yaml

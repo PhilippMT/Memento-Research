@@ -1,6 +1,6 @@
 [project]
 name = "onemancompany"
-version = "0.7.66"
+version = "0.7.67"
 description = "A one-man company simulation with pixel art visualization and LangChain AI agents"
 requires-python = ">=3.12"
 dependencies = [
@@ -25,6 +25,9 @@ dependencies = [
     "InquirerPy>=0.3",
     "datasets>=4.8.3",
     "ddgs>=8.0",
+    "chromadb>=1.0",
+    "openai>=1.0",
+    "memory-os-causal>=0.1.0,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +48,7 @@ onemancompany = "onemancompany.main:run"
 onemancompany-init = "onemancompany.onboard:main"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 markers = [
     "unit: Unit tests (no external deps, <1s)",
