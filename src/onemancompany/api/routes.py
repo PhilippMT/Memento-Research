@@ -25,6 +25,7 @@ from onemancompany.core.config import (
     DOT_ENV_FILENAME,
     EA_ID,
     ENCODING_UTF8,
+    EMPLOYEES_DIR,
     HR_ID,
     MANIFEST_FILENAME,
     MAX_SUMMARY_LEN,
@@ -4674,19 +4675,22 @@ async def hire_from_cv(body: dict) -> dict:
                 hosting=hosting,
                 auth_method=cv.get("auth_method", "api_key"),
                 remote=False,
+                department=cv.get("department", ""),
                 progress_callback=_cv_progress,
             )
             await event_bus.publish(CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent="CEO"))
             logger.info("[cv_hire] Hired {} ({})", name, emp.id)
 
-            # Dispatch COO to assign department and desk position
-            _push_adhoc_task(
-                COO_ID,
-                f"A new employee has just onboarded via CV hire. Please assign department and role using assign_department(target_employee_id, department, role).\n"
-                f"Available departments: Engineering, Design, Analytics, Marketing\n"
-                f"Determine the role based on the employee's name and skills.\n\n"
-                f"- {name}（{nickname}）#{emp.id}",
-            )
+            # Generic OMC asks COO to normalize department/role after hiring.
+            # AutoResearch source does not ship a COO, so fixed CV departments are final.
+            if (EMPLOYEES_DIR / COO_ID / "profile.yaml").exists():
+                _push_adhoc_task(
+                    COO_ID,
+                    f"A new employee has just onboarded via CV hire. Please assign department and role using assign_department(target_employee_id, department, role).\n"
+                    f"Available departments: Engineering, Design, Analytics, Marketing, Research\n"
+                    f"Determine the role based on the employee's name and skills.\n\n"
+                    f"- {name}（{nickname}）#{emp.id}",
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -4998,7 +5002,7 @@ async def _do_batch_hire(
 
         # Dispatch COO task for department assignment (only if no project context)
         last_coo_ctx = coo_ctxs[-1] if coo_ctxs else {}
-        if not last_coo_ctx.get("project_id"):
+        if not last_coo_ctx.get("project_id") and (EMPLOYEES_DIR / COO_ID / "profile.yaml").exists():
             hired_entries = [r for r in results if r["status"] == "hired"]
             if hired_entries:
                 emp_lines = "\n".join(

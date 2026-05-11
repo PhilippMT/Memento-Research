@@ -475,11 +475,9 @@ async def lifespan(app: FastAPI):
 
     # Register employees with the centralized EmployeeManager
     from onemancompany.core.agent_loop import register_agent, register_self_hosted, start_all_loops, stop_all_loops
-    from onemancompany.core.config import HR_ID as _HR_ID, COO_ID as _COO_ID, EA_ID as _EA_ID, CSO_ID as _CSO_ID
+    from onemancompany.core.config import HR_ID as _HR_ID, EA_ID as _EA_ID
     from onemancompany.agents.hr_agent import HRAgent
-    from onemancompany.agents.coo_agent import COOAgent
     from onemancompany.agents.ea_agent import EAAgent
-    from onemancompany.agents.cso_agent import CSOAgent
 
     # Start Talent Market MCP connection (skips gracefully if no API key)
     from onemancompany.agents.recruitment import start_talent_market, stop_talent_market
@@ -494,8 +492,8 @@ async def lifespan(app: FastAPI):
     # Founding employees — hosting-aware registration
     from onemancompany.core.vessel import register_founding_employee
     _founding_agents = {
-        _HR_ID: HRAgent, _COO_ID: COOAgent,
-        _EA_ID: EAAgent, _CSO_ID: CSOAgent,
+        _HR_ID: HRAgent,
+        _EA_ID: EAAgent,
     }
     _registered_founding = set()
     for _fid, _agent_cls in _founding_agents.items():
@@ -504,11 +502,12 @@ async def lifespan(app: FastAPI):
 
     # Sync default skills (SKILL.md) for all existing employees on startup
     from onemancompany.agents.onboarding import _inject_default_skills
-    for _emp_dir in sorted(_EMPLOYEES_DIR.iterdir()):
-        if _emp_dir.is_dir() and (_emp_dir / "profile.yaml").exists():
-            _skills_dir = _emp_dir / "skills"
-            _skills_dir.mkdir(exist_ok=True)
-            _inject_default_skills(_skills_dir)
+    if _EMPLOYEES_DIR.exists():
+        for _emp_dir in sorted(_EMPLOYEES_DIR.iterdir()):
+            if _emp_dir.is_dir() and (_emp_dir / "profile.yaml").exists():
+                _skills_dir = _emp_dir / "skills"
+                _skills_dir.mkdir(exist_ok=True)
+                _inject_default_skills(_skills_dir)
 
     # Register CeoExecutor for CEO (virtual employee — routes to TUI, no LLM)
     from onemancompany.core.ceo_executor import CeoExecutor
@@ -557,9 +556,10 @@ async def lifespan(app: FastAPI):
     # Load skill hooks for all registered employees
     from onemancompany.core.skill_hooks import load_hooks_from_skills
     _total_hooks = 0
-    for _emp_dir in sorted(_EMPLOYEES_DIR.iterdir()):
-        if _emp_dir.is_dir() and (_emp_dir / "profile.yaml").exists():
-            _total_hooks += load_hooks_from_skills(_emp_dir.name)
+    if _EMPLOYEES_DIR.exists():
+        for _emp_dir in sorted(_EMPLOYEES_DIR.iterdir()):
+            if _emp_dir.is_dir() and (_emp_dir / "profile.yaml").exists():
+                _total_hooks += load_hooks_from_skills(_emp_dir.name)
     if _total_hooks:
         logger.info("[startup] Loaded {} skill hook(s) across all employees", _total_hooks)
 

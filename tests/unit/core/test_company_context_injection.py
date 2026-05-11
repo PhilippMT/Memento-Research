@@ -42,7 +42,7 @@ class TestBuildRoleIdentity:
     @_patch_profile({})
     def test_empty_for_founding(self, _prof):
         """Founding employees get empty identity (they define their own)."""
-        assert build_role_identity("00003") == ""
+        assert build_role_identity("00004") == ""
 
     @_patch_profile(_MOCK_PROFILE)
     def test_executor_archetype(self, _prof):

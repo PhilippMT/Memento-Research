@@ -247,8 +247,9 @@ COO_ID = "00003"
 EA_ID = "00004"
 CSO_ID = "00005"
 
-# All founding executive IDs (excluding CEO)
-EXEC_IDS: frozenset[str] = frozenset({HR_ID, COO_ID, EA_ID, CSO_ID})
+# AutoResearch source keeps only HR and Research Director as founding executives.
+# COO_ID/CSO_ID remain defined for compatibility with legacy APIs and tests.
+EXEC_IDS: frozenset[str] = frozenset({HR_ID, EA_ID})
 # All founding IDs including CEO
 FOUNDING_IDS: frozenset[str] = frozenset({CEO_ID}) | EXEC_IDS
 
