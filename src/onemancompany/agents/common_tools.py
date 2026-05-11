@@ -22,6 +22,7 @@ from onemancompany.core import store as _store
 from onemancompany.core.store import load_employee, load_all_employees
 
 from onemancompany.tools.sandbox import SANDBOX_TOOLS, is_sandbox_enabled
+from onemancompany.core.debate import run_debate_session, select_debate_participants
 
 # Context vars for sub-task support — set by Vessel during execution
 from onemancompany.core.agent_loop import _current_vessel, _current_task_id
@@ -1905,6 +1906,138 @@ async def list_background_tasks(
 
 
 # ---------------------------------------------------------------------------
+# Multi-Agent Debate tool
+# ---------------------------------------------------------------------------
+
+@tool
+async def run_debate(
+    topic: str,
+    participant_ids: list[str],
+    max_rounds: int = 5,
+    initiator_id: str = "",
+) -> dict:
+    """Run a multi-agent debate (MAD) — structured parallel discussion among multiple agents.
+
+    Unlike pull_meeting (token-grab, one speaker per turn), MAD runs in synchronized rounds:
+    every participant responds simultaneously each round, reading ALL previous responses.
+    Ends when consensus is reached or max_rounds is exhausted. A judge delivers the final verdict.
+
+    Use this for decisions that need structured argumentation — architecture choices, strategic
+    trade-offs, risk assessments — where you want every voice heard every round.
+
+    Args:
+        topic: The debate question or proposition (e.g. "Should we migrate to microservices?")
+        participant_ids: List of colleague IDs who will debate (must be 2+ people).
+        max_rounds: Maximum number of rounds before forcing the judge conclusion (default 5).
+        initiator_id: Your employee ID (auto-filled, can be left empty).
+
+    Returns:
+        Debate result with rounds, participant positions, consensus status, and final conclusion.
+    """
+    from onemancompany.core.store import load_employee
+
+    # Load participant data
+    agents_data: dict[str, dict] = {}
+    for pid in participant_ids:
+        emp = load_employee(pid)
+        if emp:
+            agents_data[pid] = emp
+
+    valid_ids = list(agents_data.keys())
+    if len(valid_ids) < 2:
+        return _tool_error(
+            "Debate requires at least 2 valid participants.",
+            hint="Use list_colleagues() to find valid employee IDs.",
+        )
+
+    logger.debug(
+        "[run_debate] topic={!r}, participants={}, max_rounds={}, judge=impartial",
+        topic, valid_ids, max_rounds,
+    )
+
+    async def _on_message(msg: dict) -> None:
+        await _chat(
+            room_id="debate",
+            speaker=msg["speaker"],
+            role=msg.get("role", "debater"),
+            message=msg["content"],
+        )
+
+    try:
+        result = await run_debate_session(
+            topic=topic,
+            participant_ids=valid_ids,
+            agents_data=agents_data,
+            max_rounds=max_rounds,
+            on_message=_on_message,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[run_debate] session failed: {}", e)
+        return {"status": "error", "is_error": True, "message": str(e)}
+
+    out = result.to_dict()
+    out["status"] = "completed"
+    return out
+
+
+@tool
+async def select_debate_participants_tool(
+    topic: str,
+    num_participants: int = 0,
+) -> dict:
+    """Select the best participants for a debate using an impartial AI selector.
+
+    Before calling run_debate, use this tool to let a neutral selector choose
+    participants whose perspectives are likely to be diverse and opposing.
+    Review the suggestions (each comes with an expected stance) and adjust if needed,
+    then pass the participant_ids directly into run_debate.
+
+    Args:
+        topic: The debate question or proposition.
+        num_participants: How many participants to select. 0 = selector decides (recommended).
+
+    Returns:
+        suggestions: List of selected participants with expected_stance for each.
+        participant_ids: Ready-to-use list for run_debate's participant_ids argument.
+    """
+    from onemancompany.core.store import load_all_employees
+
+    all_employees = load_all_employees()
+    if not all_employees:
+        return _tool_error("No employees found. Cannot select debate participants.")
+
+    n = num_participants if num_participants > 0 else None
+
+    logger.debug(
+        "[select_debate_participants_tool] topic={!r}, num={}",
+        topic, n,
+    )
+
+    try:
+        suggestions = await select_debate_participants(
+            topic=topic,
+            all_employees=all_employees,
+            num_participants=n,
+        )
+    except asyncio.CancelledError:
+        raise
+    except ValueError as e:
+        return _tool_error(f"Selector failed: {e}")
+    except Exception as e:
+        logger.exception("[select_debate_participants_tool] failed: {}", e)
+        return {"status": "error", "is_error": True, "message": str(e)}
+
+    return {
+        "status": "ok",
+        "topic": topic,
+        "suggestions": [s.to_dict() for s in suggestions],
+        "participant_ids": [s.employee_id for s in suggestions],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tool registration — register all internal tools into the unified registry
 # ---------------------------------------------------------------------------
 
@@ -1919,6 +2052,7 @@ def _register_all_internal_tools() -> None:
 
     _base = [
         list_colleagues, read, ls, write, edit, pull_meeting,
+        run_debate, select_debate_participants_tool,
         glob_files, grep_search,
         load_skill,
         resume_held_task, update_project_team,
