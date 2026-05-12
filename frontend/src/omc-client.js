@@ -2,7 +2,7 @@
 // Connects to OMC backend, exposes event stream + command methods.
 
 export class OmcClient {
-  constructor(baseUrl = 'http://localhost:8000') {
+  constructor(baseUrl = window.location.origin) {
     this.baseUrl = baseUrl;
     this.ws = null;
     this.listeners = [];

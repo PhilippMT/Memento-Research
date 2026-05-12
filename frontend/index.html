@@ -233,6 +233,42 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .sc-section-content th{background:var(--bg);font-weight:600}
 .sc-section-content hr{border:none;border-top:1px solid var(--border-light);margin:12px 0}
 
+/* ── Literature-conflict-graph (Stage 3 talent) — hypothesis cards + ID hover ── */
+.lcg-advisor{padding:10px 12px;background:var(--green-subtle);border-left:3px solid var(--green);border-radius:var(--r);margin:0 0 12px}
+.lcg-advisor-label{font-family:var(--mono);font-size:.66rem;color:var(--green);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.lcg-advisor>p,.lcg-advisor>ul,.lcg-advisor>ol{margin:0 0 6px}
+.lcg-advisor>p:last-child,.lcg-advisor>ul:last-child,.lcg-advisor>ol:last-child{margin-bottom:0}
+.lcg-hyp-grid{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.lcg-card{border:1px solid var(--border-light);border-radius:var(--r);background:var(--white);overflow:hidden}
+.lcg-card>summary{cursor:pointer;padding:7px 10px;font-size:.82rem;list-style:none;user-select:none;display:flex;align-items:baseline;gap:6px}
+.lcg-card>summary::-webkit-details-marker{display:none}
+.lcg-card>summary::before{content:"▸";color:var(--text3);font-size:.7rem;transition:transform .15s}
+.lcg-card[open]>summary::before{transform:rotate(90deg);display:inline-block}
+.lcg-card[open]>summary{border-bottom:1px solid var(--border-light)}
+.lcg-card-body{padding:8px 10px;font-size:.78rem}
+.lcg-row{display:grid;grid-template-columns:96px 1fr;gap:10px;padding:4px 0;border-bottom:1px dashed var(--border-light)}
+.lcg-row:last-child{border-bottom:none}
+.lcg-row-label{font-family:var(--mono);font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;padding-top:3px}
+.lcg-row-content{color:var(--text2);line-height:1.55;word-break:break-word}
+.lcg-row-content ul{margin:2px 0 2px 16px;padding:0}
+.lcg-row-content li{margin:2px 0}
+.lcg-row-content a{color:var(--green);text-decoration:none;font-family:var(--mono);font-size:.74rem;border-bottom:1px dotted var(--green)}
+.lcg-row-content a:hover{color:var(--green-light)}
+.lcg-id{display:inline-block;background:var(--green-subtle);color:var(--green);padding:1px 6px;border-radius:3px;font-family:var(--mono);font-size:.74rem;font-weight:600}
+.lcg-id-anom{background:var(--coral-subtle);color:var(--coral)}
+.lcg-anomalies{margin-top:10px}
+.lcg-anomalies>summary{cursor:pointer;font-family:var(--mono);font-size:.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;padding:4px 0;list-style:none}
+.lcg-anomalies>summary::-webkit-details-marker{display:none}
+.lcg-anom{display:flex;align-items:baseline;gap:8px;padding:4px 0;font-size:.74rem;color:var(--text2);border-bottom:1px dashed var(--border-light)}
+.lcg-anom:last-child{border-bottom:none}
+.lcg-anom-type{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
+.lcg-ref{display:inline-block;background:var(--green-subtle);color:var(--green);padding:0 4px;border-radius:3px;font-family:var(--mono);font-size:.95em;cursor:help}
+.lcg-ref:hover{background:var(--green);color:var(--white)}
+.lcg-popup{position:absolute;display:none;z-index:9999;max-width:380px;background:var(--white);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:.74rem;line-height:1.5;color:var(--text2);pointer-events:none}
+.lcg-pop-title{font-weight:600;color:var(--text);margin-bottom:6px;display:flex;align-items:baseline;gap:6px}
+.lcg-pop-row{margin:4px 0}
+.lcg-pop-row strong{color:var(--text);font-weight:600}
+
 /* Confidence bar (inside card footer) */
 .sc-conf{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--bg)}
 .sc-conf-label{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
@@ -1144,7 +1180,17 @@ function getStageCard(id, title, agentName, agentInitials) {
 // Update the producer section of a stage card
 function updateProducer(cardId, content) {
   const el = document.getElementById('sc-prod-text-' + cardId);
-  if (el) el.innerHTML = _renderMd(_clean(content));
+  if (!el) return;
+  // Always sanitize first — strips project IDs, workspace markers, and
+  // absolute /Users/... paths. The specialized lcg renderer also runs on the
+  // cleaned content so its output cannot bypass that boundary.
+  const cleaned = _clean(content);
+  // Specialized rendering for literature-conflict-graph stage output
+  // (hypothesis cards + ID hover). Falls through to plain markdown otherwise.
+  const lcgHtml = (typeof window._tryRenderLcg === 'function')
+    ? window._tryRenderLcg(cleaned)
+    : null;
+  el.innerHTML = lcgHtml || _renderMd(cleaned);
   _scroll();
 }
 
