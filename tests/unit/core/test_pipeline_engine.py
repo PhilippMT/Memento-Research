@@ -329,3 +329,51 @@ async def test_event_emitters_publish_payloads_in_running_loop(tmp_path, monkeyp
     assert payloads[3]["type"] == "breakpoint_hit"
     assert payloads[3]["retries_exhausted"] is True
     assert payloads[4] == {"type": "pipeline_complete", "project_id": "p1", "stages_completed": 1, "pipeline_managed": True}
+
+
+def test_dispatch_producer_stage4_injects_methodology_debate_skill_trigger(tmp_path, monkeypatch):
+    """Stage 4 (Methodology Design) task description must instruct the
+    methodology_designer to load the methodology-debate-convener skill
+    before producing the deliverable. Other stages must not get this trigger."""
+    dispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-meth" if skill == "methodology_designer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine._dispatch_producer()
+
+    assert dispatched, "producer must dispatch"
+    desc = dispatched[0][1]
+    assert 'load_skill("methodology-debate-convener")' in desc, (
+        "Stage 4 task description must instruct the producer to load the convener skill"
+    )
+
+
+def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, monkeypatch):
+    """Stages other than 4 must not contain the methodology-debate-convener trigger."""
+    dispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-topic" if skill == "topic_refiner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 1
+    engine._dispatch_producer()
+
+    assert dispatched, "producer must dispatch"
+    desc = dispatched[0][1]
+    assert "methodology-debate-convener" not in desc, (
+        "Non-Stage-4 stages must not carry the debate convener trigger"
+    )

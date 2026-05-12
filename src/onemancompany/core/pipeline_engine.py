@@ -249,6 +249,17 @@ class PipelineEngine:
         )
         if feedback:
             desc += f"\nFeedback from previous review:\n{feedback}\n"
+        # Stage 4 (Methodology Design) must run a multi-agent debate before
+        # writing the methodology. The convener skill is the runbook.
+        if stage["id"] == 4:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("methodology-debate-convener") '
+                "and follow the runbook exactly. It walks you through convening a debate "
+                "with diverse colleagues, running run_debate(), and synthesising the "
+                "transcript into the methodology document. Do not write the methodology "
+                "directly without convening the debate first.\n"
+            )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
             f"Write your output to a file named stage{stage['id']}_{stage['skill']}.md "
