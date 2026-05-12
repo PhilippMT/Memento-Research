@@ -458,7 +458,7 @@ class TestLifespan:
             mock_start_sandbox.assert_called_once()
             mock_start_tm.assert_awaited_once()
             mock_start_all.assert_awaited_once()
-            assert mock_register_founding.call_count == 4  # HR, COO, EA, CSO
+            assert mock_register_founding.call_count == 2  # HR, Research Director
 
         # Verify shutdown was called
         mock_stop_all.assert_awaited_once()
@@ -527,8 +527,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # 4 founding via register_founding_employee, 1 non-founding via register_agent
-        assert mock_register_founding.call_count == 4
+        # 2 founding via register_founding_employee, 1 non-founding via register_agent
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 1
 
     @pytest.mark.asyncio
@@ -647,8 +647,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # Only the 4 founding registrations (HR, COO, EA, CSO), not the extra one
-        assert mock_register_founding.call_count == 4
+        # Only the 2 founding registrations (HR, Research Director), not the extra one
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 0
 
     @pytest.mark.asyncio
@@ -705,8 +705,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # Only 4 founding, not 5
-        assert mock_register_founding.call_count == 4
+        # Only 2 founding, not 3
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 0
 
     @pytest.mark.asyncio
@@ -763,8 +763,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # Only 4 founding
-        assert mock_register_founding.call_count == 4
+        # Only 2 founding
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 0
 
     @pytest.mark.asyncio
@@ -824,8 +824,8 @@ class TestLifespan:
             pass
 
         # _cfg is None for non-founding, goes to register_agent
-        # 4 founding via register_founding_employee, 1 non-founding via register_agent
-        assert mock_register_founding.call_count == 4
+        # 2 founding via register_founding_employee, 1 non-founding via register_agent
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 1
         mock_register_self_hosted.assert_not_called()
 

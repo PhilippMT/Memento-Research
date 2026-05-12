@@ -243,6 +243,37 @@ class TestLoadEmployeeConfigs:
         configs = cfg.load_employee_configs()
         assert configs == {}
 
+    def test_skips_ceo_runtime_only_profile(self, tmp_path, monkeypatch, caplog):
+        """CEO profile carries only `runtime:` stub (no name/role/skills since
+        the CEO is the human user). Loader must skip CEO_ID silently rather
+        than warn 'Skipping corrupt profile 00001' on every dict access."""
+        import logging
+        import onemancompany.core.config as cfg
+
+        # CEO profile — runtime-only, missing required EmployeeConfig fields
+        ceo = tmp_path / cfg.CEO_ID
+        ceo.mkdir()
+        (ceo / "profile.yaml").write_text("runtime:\n  status: idle\n")
+
+        # Regular employee — fully populated
+        emp = tmp_path / "00007"
+        emp.mkdir()
+        (emp / "profile.yaml").write_text(
+            "name: EmpSeven\nrole: Engineer\nskills:\n  - python\n"
+        )
+
+        monkeypatch.setattr(cfg, "EMPLOYEES_DIR", tmp_path)
+        with caplog.at_level(logging.WARNING):
+            configs = cfg.load_employee_configs()
+
+        assert cfg.CEO_ID not in configs, "CEO must not appear in configs"
+        assert "00007" in configs and configs["00007"].name == "EmpSeven"
+        # No warning fired for the CEO — silent skip, not a "corrupt profile" log
+        assert not any("Skipping corrupt profile " + cfg.CEO_ID in r.message
+                       for r in caplog.records), (
+            "Loader spammed a corruption warning for CEO_ID; expected silent skip"
+        )
+
 
 # ---------------------------------------------------------------------------
 # EmployeeConfig model
