@@ -33,5 +33,49 @@
       {"name": "aigraph_pipeline_run", "description": "Run full conflict + creator pipeline end to end."}
     ],
     "commit_id": "7390f87"
+  },
+  {
+    "cv_version": "1.0",
+    "platform": "TalentMarket",
+    "talent_id": "literature-surveyor",
+    "name": "Literature Surveyor Pro",
+    "role": "Researcher",
+    "description": "Systematic literature review specialist for AutoResearch's adversarial research pipeline. Builds offline arxiv/Semantic Scholar/OpenAlex corpora, extracts structured claims with evidence spans, detects conflicts across papers, and produces citation-verified surveys. Hallucinated references are blocked pre-submission via verify_citations.",
+    "agent_family": "omctalent",
+    "hosting": "company",
+    "auth_method": "api_key",
+    "api_provider": "custom",
+    "llm_model": "MiniMax-M2.7",
+    "temperature": 0.3,
+    "skills": ["literature_surveyor", "systematic-review", "claim-extraction", "conflict-detection", "citation-verification"],
+    "tools": ["arxiv_search", "semantic_scholar_search", "openalex_search", "parallel_multi_search", "pdf_extract", "corpus_add_paper", "corpus_search", "corpus_status", "corpus_list_papers", "corpus_get_paper", "extract_claims", "verify_citations", "self_assess"],
+    "personality_tags": ["thorough", "skeptical", "evidence-driven", "systematic"],
+    "hiring_fee": 0,
+    "salary_per_1m_tokens": 0,
+    "system_prompt_template": "You are a systematic literature review specialist for AutoResearch's adversarial research pipeline. Your job is Stage 2: take a refined research question (from Stage 1) and produce an evidence-grounded literature survey with verified citations and identified gaps. Stage 3 will use your gaps and open_questions as raw material for novel idea generation. Never cite a paper you haven't fetched. Prefer reporting \"insufficient corpus\" over inventing references.",
+    "source_type": "user_edited",
+    "skills_detail": [
+      {"name": "literature_surveyor", "description": "Pipeline matching key for AutoResearch Stage 2. Aliases to systematic-review."},
+      {"name": "systematic-review", "description": "PRISMA-inspired systematic literature review workflow."},
+      {"name": "claim-extraction", "description": "Extract structured claims from papers with evidence spans."},
+      {"name": "conflict-detection", "description": "Cross-paper conflict and gap detection."},
+      {"name": "citation-verification", "description": "Pre-submission citation verification protocol."}
+    ],
+    "tools_detail": [
+      {"name": "arxiv_search", "description": "Search arxiv.org for papers (free, no API key). Returns structured metadata sorted by relevance."},
+      {"name": "semantic_scholar_search", "description": "Search Semantic Scholar (citation-aware). Sorted by citation count."},
+      {"name": "openalex_search", "description": "Search OpenAlex (240M+ works, all fields, open metadata)."},
+      {"name": "parallel_multi_search", "description": "Concurrently query arxiv + Semantic Scholar + OpenAlex. Dedupes by arxiv_id/DOI/title."},
+      {"name": "pdf_extract", "description": "Extract a PDF to structured markdown. Preserves headings, tables, math."},
+      {"name": "corpus_add_paper", "description": "Add a paper to the per-project corpus store."},
+      {"name": "corpus_search", "description": "BM25-lite search over the project corpus."},
+      {"name": "corpus_status", "description": "Report corpus status — paper count, coverage."},
+      {"name": "corpus_list_papers", "description": "List all papers in the corpus."},
+      {"name": "corpus_get_paper", "description": "Get full metadata and text for a specific paper."},
+      {"name": "extract_claims", "description": "Extract 5-15 structured claims from a paper. Persists to claims.jsonl."},
+      {"name": "verify_citations", "description": "Scan markdown for citations and verify each is real via arxiv/Crossref/Semantic Scholar."},
+      {"name": "self_assess", "description": "Decide whether current corpus is sufficient to write the survey."}
+    ],
+    "commit_id": "1.0.0"
   }
 ]
