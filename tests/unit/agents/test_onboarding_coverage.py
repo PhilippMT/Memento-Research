@@ -539,3 +539,58 @@ class TestAdversarialReviewerGetsQualityCritic:
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
         assert "adversarial_review" in _SKILL_REQUIRED_RUNBOOKS
         assert "methodology-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]
+
+
+class TestExperimentSkillRunbooks:
+    """experiment_designer must auto-receive the experiment-debate-convener
+    runbook; adversarial_review must also auto-receive experiment-quality-critic
+    in addition to methodology-quality-critic."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in (
+            "task_lifecycle",
+            "methodology-debate-convener",
+            "methodology-quality-critic",
+            "experiment-debate-convener",
+            "experiment-quality-critic",
+        ):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_experiment_designer_gets_experiment_convener(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00200"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- experiment_designer\nname: ExpDesigner\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00200")
+
+        assert (skills_dir / "experiment-debate-convener" / "SKILL.md").exists()
+
+    def test_adversarial_review_gets_both_quality_critics(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00201"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- adversarial_review\nname: Critic\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00201")
+
+        # Already had this from PR #19
+        assert (skills_dir / "methodology-quality-critic" / "SKILL.md").exists()
+        # NEW: also gets the experiment critic
+        assert (skills_dir / "experiment-quality-critic" / "SKILL.md").exists()
+
+    def test_mapping_includes_experiment_designer(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment_designer" in _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment-debate-convener" in _SKILL_REQUIRED_RUNBOOKS["experiment_designer"]
+
+    def test_adversarial_review_includes_experiment_quality_critic(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]

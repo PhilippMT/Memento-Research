@@ -261,6 +261,19 @@ class PipelineEngine:
                 "the transcript, and revise v1 into a CCF-A-grade final methodology "
                 "(8 sections, English only). Do not skip any phase.\n"
             )
+        # Stage 5 (Experiment Design) mirrors the Stage 4 flow: draft → debate
+        # → revise → coordination (assignments table). The experiment convener
+        # skill is the runbook.
+        if stage["id"] == 5:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("experiment-debate-convener") '
+                "and follow the runbook exactly. It walks you through reading the Stage 4 "
+                "methodology, drafting an initial experiment plan, debating it with the "
+                "team, revising it into a CCF-A-grade experiment plan, and producing a "
+                "coordination assignments table for Stage 6 execution. Do not write the "
+                "experiment plan directly without convening the debate first.\n"
+            )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
             f"Write your output to a file named stage{stage['id']}_{stage['skill']}.md "
@@ -308,6 +321,18 @@ class PipelineEngine:
                 "reproducibility, threats-to-validity depth, citation of the "
                 "debate transcript). Reject confidently when any required "
                 "section is shallow or missing.\n\n"
+            )
+        elif stage["id"] == 5:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("experiment-quality-critic") and follow that '
+                "runbook to grade the experiment plan and coordination "
+                "assignments against CCF-A criteria (operational procedure, "
+                "sample-size/power math, pre-registration spec, failure-mode "
+                "mitigations, reproducibility, debate citation, and a fully "
+                "populated assignments table). Reject confidently when any "
+                "required section is shallow or missing.\n\n"
             )
         desc += f"--- Producer Output ---\n{producer_result}\n"
 
