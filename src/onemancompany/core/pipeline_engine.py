@@ -293,8 +293,22 @@ class PipelineEngine:
             f"2. A PASS or REJECT decision\n"
             f"3. Specific reasoning\n\n"
             f"If REJECT, explain exactly what needs to be improved.\n\n"
-            f"--- Producer Output ---\n{producer_result}\n"
         )
+        # Stage 4 (Methodology Design) is graded against a CCF-A quality
+        # checklist. Load the runbook first so the critic applies the same
+        # bar an ICML/NeurIPS reviewer would.
+        if stage["id"] == 4:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("methodology-quality-critic") and follow that '
+                "runbook to grade the methodology against CCF-A criteria "
+                "(formalism, algorithmic detail, statistical rigor, "
+                "reproducibility, threats-to-validity depth, citation of the "
+                "debate transcript). Reject confidently when any required "
+                "section is shallow or missing.\n\n"
+            )
+        desc += f"--- Producer Output ---\n{producer_result}\n"
 
         self.state["phase"] = "critic"
         self._save()
