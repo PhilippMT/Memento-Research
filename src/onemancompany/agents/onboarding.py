@@ -23,6 +23,7 @@ from onemancompany.core.config import (
     DEFAULT_TOOL_PERMISSIONS,
     DEFAULT_TOOL_PERMISSIONS_FALLBACK,
     DEFAULT_DEPARTMENT,
+    EMPLOYEES_DIR,
     HR_ID,
     open_utf,
     MANIFEST_FILENAME,
@@ -706,6 +707,133 @@ def _inject_default_skills(
                                     shutil.copy2(str(f), str(dst_f))
                                 elif f.is_dir():
                                     shutil.copytree(str(f), str(dst_f))
+
+
+# ---------------------------------------------------------------------------
+# Cloud skill installation via fastskills MCP
+# (overridable hooks so unit tests can mock the MCP transport)
+# ---------------------------------------------------------------------------
+
+# Lazy imports — fastskills + MCP libs may not be installed in every dev env,
+# so we import on first use. Tests overwrite the two module-level hooks below.
+_FastskillsStdioClient = None
+_FastskillsClientSession = None
+
+
+def _fastskills_mcp_clients():
+    """Return (stdio_client, ClientSession, StdioServerParameters), importing on demand."""
+    global _FastskillsStdioClient, _FastskillsClientSession
+    from mcp import ClientSession as _CS, StdioServerParameters as _Params
+    from mcp.client.stdio import stdio_client as _stdio
+    if _FastskillsStdioClient is None:
+        _FastskillsStdioClient = _stdio
+    if _FastskillsClientSession is None:
+        _FastskillsClientSession = _CS
+    return _FastskillsStdioClient, _FastskillsClientSession, _Params
+
+
+async def _search_cloud_skills_via_fastskills(
+    query: str,
+    api_key: str = "",
+) -> str:
+    """Query the SkillsMP cloud catalog via a short-lived ``fastskills`` MCP subprocess.
+
+    company-hosted and omctalent-hosted agents do not have direct MCP access
+    (only ``hosting: self`` does, via ClaudeSessionExecutor), so this helper
+    bridges the gap: spin up fastskills as a stdio subprocess scoped to a tmp
+    skills_dir + workdir, call ``search_cloud_skills``, return the raw output.
+
+    Args:
+        query: Search keywords passed straight through to SkillsMP.
+        api_key: SkillsMP API key. Defaults to ``settings.skillsmp_api_key``.
+
+    Returns:
+        The raw textual output from the fastskills ``search_cloud_skills`` tool.
+
+    Raises:
+        RuntimeError: when ``SKILLSMP_API_KEY`` is not configured.
+    """
+    import os
+    import tempfile
+
+    effective_key = api_key or settings.skillsmp_api_key
+    if not effective_key:
+        raise RuntimeError(
+            "SKILLSMP_API_KEY is not configured; cannot search cloud skills."
+        )
+
+    stdio_client, ClientSession, StdioServerParameters = _fastskills_mcp_clients()
+
+    with tempfile.TemporaryDirectory(prefix="fastskills-search-") as tmpdir:
+        params = StdioServerParameters(
+            command="uvx",
+            args=["fastskills", "--skills-dir", tmpdir, "--workdir", tmpdir],
+            env={**os.environ, "SKILLSMP_API_KEY": effective_key},
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "search_cloud_skills", {"query": query}
+                )
+                return "".join(getattr(c, "text", "") for c in result.content)
+
+
+async def _install_cloud_skill_for_employee(
+    employee_id: str,
+    skill_github_url: str,
+    api_key: str = "",
+) -> str:
+    """Install a SkillsMP cloud skill into an employee's own skills/ directory.
+
+    Spawns ``fastskills`` as a short-lived MCP stdio subprocess scoped to the
+    target employee's ``skills/`` and ``workspace/`` dirs, calls
+    ``install_cloud_skill``, then closes.
+
+    Args:
+        employee_id: Numeric employee id (e.g. "00007").
+        skill_github_url: GitHub tree URL of the skill (e.g.
+            https://github.com/foo/repo/tree/main/skills/experiment-design).
+            SkillsMP URLs are not accepted — fastskills requires the github URL.
+        api_key: SkillsMP API key. Defaults to ``settings.skillsmp_api_key``.
+
+    Returns:
+        The install_cloud_skill tool's textual output.
+
+    Raises:
+        RuntimeError: when SKILLSMP_API_KEY is not configured.
+    """
+    import os
+
+    effective_key = api_key or settings.skillsmp_api_key
+    if not effective_key:
+        raise RuntimeError(
+            "SKILLSMP_API_KEY is not configured; cannot install cloud skills."
+        )
+
+    skills_dir = EMPLOYEES_DIR / employee_id / "skills"
+    workdir = EMPLOYEES_DIR / employee_id / WORKSPACE_DIR_NAME
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    stdio_client, ClientSession, StdioServerParameters = _fastskills_mcp_clients()
+    params = StdioServerParameters(
+        command="uvx",
+        args=["fastskills", "--skills-dir", str(skills_dir), "--workdir", str(workdir)],
+        env={**os.environ, "SKILLSMP_API_KEY": effective_key},
+    )
+
+    logger.debug(
+        "[_install_cloud_skill_for_employee] employee={} url={}",
+        employee_id, skill_github_url,
+    )
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "install_cloud_skill", {"skill_url": skill_github_url}
+            )
+            return "".join(getattr(c, "text", "") for c in result.content)
 
 
 def _assign_default_avatar(emp_dir: Path, emp_num: str) -> None:
