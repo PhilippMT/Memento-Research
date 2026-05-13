@@ -70,6 +70,14 @@ _DEFAULT_SKILLS_DIR = Path(__file__).resolve().parent.parent / "default_skills"
 _DEFAULT_SKILL_NAMES = ["task_lifecycle"]
 # EA-only skills injected during founding team setup
 _EA_SKILL_NAMES = ["project-brainstorming"]
+# Profile-skill → required-runbook mapping.
+# When an employee carries a skill listed here, the corresponding runbook(s)
+# from default_skills/ are injected into their skills/ directory so that
+# load_skill(<runbook>) can resolve at runtime. This is the SSOT for the
+# pattern; adding a new convener-style skill is one-line dict edit.
+_SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
+    "methodology_designer": ["methodology-debate-convener"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -624,17 +632,52 @@ async def clone_talent_repo(repo_url: str, talent_id: str) -> Path:
     return resolved if resolved.exists() else _TALENTS_CLONE_DIR
 
 
-def _inject_default_skills(skills_dir: Path, employee_id: str = "") -> None:
+def _inject_default_skills(
+    skills_dir: Path,
+    employee_id: str = "",
+    employee_skills: list[str] | None = None,
+) -> None:
     """Copy/update default skills into the employee's skills folder.
 
     Always overwrites SKILL.md from the source to pick up frontmatter
     changes (e.g. autoload flag). Preserves employee-specific files
     in the skill directory that don't exist in the source.
+
+    Skill-conditional runbook injection: if the employee carries a skill
+    listed in ``_SKILL_REQUIRED_RUNBOOKS``, the mapped runbook names are
+    added to the injection list (e.g. ``methodology_designer`` →
+    ``methodology-debate-convener``). When ``employee_skills`` is not
+    provided, the function reads ``skills_dir.parent / 'profile.yaml'`` to
+    discover the employee's skills; if no profile file is present, only the
+    universal defaults are injected.
     """
     from onemancompany.core.config import EA_ID
     names = list(_DEFAULT_SKILL_NAMES)
     if employee_id == EA_ID:
         names.extend(_EA_SKILL_NAMES)
+
+    # Discover the employee's skills if not passed explicitly.
+    if employee_skills is None:
+        profile_path = skills_dir.parent / "profile.yaml"
+        if profile_path.exists():
+            try:
+                import yaml
+                with profile_path.open(encoding="utf-8") as f:
+                    profile = yaml.safe_load(f) or {}
+                employee_skills = list(profile.get("skills") or [])
+            except Exception as exc:
+                logger.warning(
+                    "[_inject_default_skills] failed to read {}: {}", profile_path, exc
+                )
+                employee_skills = []
+        else:
+            employee_skills = []
+
+    # Add runbooks required by the employee's skills.
+    for skill in employee_skills:
+        for runbook in _SKILL_REQUIRED_RUNBOOKS.get(skill, []):
+            if runbook not in names:
+                names.append(runbook)
     for name in names:
         src = _DEFAULT_SKILLS_DIR / name
         if not src.exists():

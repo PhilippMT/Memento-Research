@@ -422,3 +422,90 @@ class TestCopyClaudeMd:
 # execute_hire — launch/heartbeat script copy (lines 1021-1031)
 # ---------------------------------------------------------------------------
 
+
+
+# ---------------------------------------------------------------------------
+# _SKILL_REQUIRED_RUNBOOKS — skill-conditional default runbook injection
+# (regression for bug found in PR #15 smoke test)
+# ---------------------------------------------------------------------------
+
+class TestSkillConditionalRunbookInjection:
+    """A user with the methodology_designer skill must have the
+    methodology-debate-convener runbook auto-injected, so that the Stage 4
+    pipeline trigger (load_skill) actually resolves at runtime.
+    """
+
+    def _setup_default_skills(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "methodology-debate-convener"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent for {skill_name}")
+        return ob_mod
+
+    def test_inject_methodology_runbook_when_skill_present(self, tmp_path, monkeypatch):
+        ob_mod = self._setup_default_skills(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00006"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- methodology_designer\nname: Methodology Designer\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00006")
+
+        assert (skills_dir / "methodology-debate-convener" / "SKILL.md").exists(), (
+            "methodology_designer skill must trigger methodology-debate-convener runbook injection"
+        )
+        # task_lifecycle is the universal default — still injected
+        assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
+
+    def test_does_not_inject_methodology_runbook_without_skill(self, tmp_path, monkeypatch):
+        ob_mod = self._setup_default_skills(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00007"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- topic_refiner\nname: Topic Refiner\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00007")
+
+        assert not (skills_dir / "methodology-debate-convener").exists(), (
+            "Employees without methodology_designer skill must NOT receive the convener runbook"
+        )
+
+    def test_inject_with_explicit_skills_arg_does_not_need_profile(self, tmp_path, monkeypatch):
+        """Caller can pass employee_skills directly (avoids re-reading profile.yaml
+        during hiring, where the skills list is already in memory)."""
+        ob_mod = self._setup_default_skills(tmp_path, monkeypatch)
+        skills_dir = tmp_path / "fresh" / "skills"
+        skills_dir.mkdir(parents=True)
+        # NOTE: no profile.yaml on disk
+
+        ob_mod._inject_default_skills(
+            skills_dir, employee_id="00008", employee_skills=["methodology_designer"]
+        )
+
+        assert (skills_dir / "methodology-debate-convener" / "SKILL.md").exists()
+
+    def test_skill_required_runbooks_mapping_exists(self):
+        """The mapping is the SSOT for skill → required runbook injection.
+        Adding a new convener-style skill should only require editing this dict."""
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "methodology_designer" in _SKILL_REQUIRED_RUNBOOKS
+        assert "methodology-debate-convener" in _SKILL_REQUIRED_RUNBOOKS["methodology_designer"]
+
+    def test_missing_profile_yaml_is_graceful(self, tmp_path, monkeypatch):
+        """If profile.yaml is missing and no employee_skills passed, function
+        must not crash — fall back to universal-only injection."""
+        ob_mod = self._setup_default_skills(tmp_path, monkeypatch)
+        skills_dir = tmp_path / "ghost" / "skills"
+        skills_dir.mkdir(parents=True)
+        # No profile.yaml, no employee_skills arg
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="ghost")
+        # task_lifecycle still injected; no crash
+        assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
+        assert not (skills_dir / "methodology-debate-convener").exists()
