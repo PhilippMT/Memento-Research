@@ -91,6 +91,48 @@ For a quantitative study you want:
 - Someone strong on the application domain
 - Someone willing to defend a contrarian position (qualitative, simulation, etc.)
 
+### Option C — Roster too small? Assemble specialists from SkillsMP
+
+If `list_colleagues()` shows fewer than 3 colleagues with methodological
+expertise (e.g. mostly HR / operations / executives), build new specialists
+on the fly using the **SkillsMP cloud catalog** via the `fastskills` MCP
+that is already wired into your tool set.
+
+```python
+# 1. Search the cloud catalog for skills relevant to the debate.
+hits_1 = search_cloud_skills(query="causal inference RCT methodology")
+hits_2 = search_cloud_skills(query="experiment design A/B testing")
+hits_3 = search_cloud_skills(query="threats validity observational")
+
+# 2. From each result, pick the "github:" tree URL (NOT the skillsmp.com URL).
+#    Example github URL format:
+#      https://github.com/owner/repo/tree/main/skills/<skill-name>
+
+# 3. Hire one specialist per skill. Each call creates a new employee whose
+#    skills/ folder has the cloud skill installed during onboarding.
+spec1 = assemble_specialist_from_skill(
+    name="Dr Alex Causal",
+    role="Causal Inference Statistician",
+    skill_github_url="https://github.com/foo/repo/tree/main/skills/causal-inference",
+    work_principles="Reasons from DAGs and identification strategy. Treats correlation as suspect by default.",
+)
+spec2 = assemble_specialist_from_skill(
+    name="Dr Maya RCT",
+    role="Experimental Design Specialist",
+    skill_github_url="https://github.com/bar/baz/tree/main/skills/experiment-design",
+    work_principles="Insists on pre-registration, power calc, and primary metric singular.",
+)
+# ... repeat for the perspectives the debate needs.
+
+participant_ids = [spec1["employee_id"], spec2["employee_id"], ...]
+```
+
+**Rules of thumb**:
+- One skill per specialist — sharper perspective than mashing 3 skills into one persona.
+- Aim for 3-5 specialists across **opposing** methodological camps (RCT vs observational; quantitative vs qualitative; etc.).
+- The new employees stay on the roster — useful for future Stage 4 debates in the same domain. Avoid re-hiring an employee with the same skill you've already onboarded earlier; check `list_colleagues()` first.
+- If `assemble_specialist_from_skill` returns `status: "ok_partial"`, the employee was hired but the skill failed to install — they'll still debate but without the cloud skill's content. Acceptable for one debate; flag in **Open Questions** for follow-up.
+
 **Minimum 2 participants. Recommended 3-5. More than 5 is usually noise.**
 
 ---

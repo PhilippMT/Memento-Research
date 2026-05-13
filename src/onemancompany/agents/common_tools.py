@@ -2038,6 +2038,146 @@ async def select_debate_participants_tool(
 
 
 # ---------------------------------------------------------------------------
+# Specialist assembly — hire AI-generated experts backed by SkillsMP cloud skills
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def assemble_specialist_from_skill(
+    name: str,
+    role: str,
+    skill_github_url: str,
+    department: str = "Research",
+    work_principles: str = "",
+) -> dict:
+    """Hire an AI-generated specialist whose expertise centers on a specific SkillsMP skill.
+
+    Use when your roster lacks the methodological expertise needed for a debate
+    or task. Workflow:
+      1. Call search_cloud_skills (from your fastskills MCP) to find candidate skills.
+      2. Pick a skill's GitHub tree URL from the search results.
+      3. Call this tool to create an employee built around that skill.
+      4. Repeat for additional specialists if you need multiple perspectives.
+
+    The new employee is hired into the standard roster (no CEO confirmation step),
+    the cloud skill is installed into their skills/ directory during onboarding,
+    and they become immediately addressable by employee_id for run_debate and
+    dispatch_child.
+
+    Args:
+        name: Full name with title, e.g. "Dr. Alex Causal".
+        role: Specific role / specialty, e.g. "Causal Inference Statistician".
+        skill_github_url: GitHub tree URL from search_cloud_skills results.
+            Must start with https://github.com/ — the skillsmp.com URL is NOT
+            accepted (fastskills install requires the github URL).
+        department: Org department, default "Research".
+        work_principles: One-sentence summary of methodological approach.
+
+    Returns:
+        On success: status="ok", employee_id, name, nickname, installed_skill,
+                    skill_github_url, install_result.
+        On hire-but-no-install: status="ok_partial" with the employee_id but
+                                is_error=True flagging the skill failure.
+        On any other failure: status="error" via _tool_error.
+    """
+    from onemancompany.agents.onboarding import (
+        execute_hire,
+        generate_nickname,
+        _install_cloud_skill_for_employee,
+    )
+    from onemancompany.core.config import settings, EMPLOYEES_DIR
+
+    if not settings.skillsmp_api_key:
+        return _tool_error(
+            "SKILLSMP_API_KEY is not configured. Cannot assemble specialists from cloud skills.",
+            hint="Ask the CEO to set SKILLSMP_API_KEY in .env, or pick participants from the existing roster instead.",
+        )
+
+    if not skill_github_url.startswith("https://github.com/"):
+        return _tool_error(
+            f"skill_github_url must be a github.com tree URL (got {skill_github_url!r}). "
+            "Pick the 'github:' link from search_cloud_skills output, not the skillsmp.com link.",
+        )
+
+    # Skill name from the URL — last path segment of the github tree URL.
+    import os as _os
+    skill_name = _os.path.basename(skill_github_url.rstrip("/"))
+
+    try:
+        nickname = await asyncio.wait_for(
+            generate_nickname(name, role, is_founding=False), timeout=60,
+        )
+    except asyncio.TimeoutError:
+        nickname = name.split()[0][:8] if name else "Expert"
+    except Exception as e:
+        logger.warning("[assemble_specialist] nickname generation failed: {}", e)
+        nickname = name.split()[0][:8] if name else "Expert"
+
+    logger.info(
+        "[assemble_specialist] hiring {} ({}) for skill {} from {}",
+        name, role, skill_name, skill_github_url,
+    )
+
+    try:
+        emp = await execute_hire(
+            name=name,
+            nickname=nickname,
+            role=role,
+            skills=[skill_name],
+            department=department,
+            hosting="company",
+            api_provider=settings.default_api_provider or "openrouter",
+            llm_model="",          # company default
+            temperature=0.3,
+            auth_method="api_key",
+            remote=False,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[assemble_specialist] execute_hire failed")
+        return _tool_error(f"hire failed: {e}")
+
+    # Persist work_principles if provided (overrides any default created during onboarding)
+    if work_principles:
+        try:
+            wp_path = EMPLOYEES_DIR / emp.id / "work_principles.md"
+            write_text_utf(wp_path, work_principles)
+        except Exception as e:
+            logger.warning(
+                "[assemble_specialist] failed to write work_principles for {}: {}", emp.id, e,
+            )
+
+    # Install the cloud skill into the new employee's skills/ dir.
+    try:
+        install_result = await _install_cloud_skill_for_employee(
+            emp.id, skill_github_url,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[assemble_specialist] cloud skill install failed for {}", emp.id)
+        return {
+            "status": "ok_partial",
+            "is_error": True,
+            "message": f"Employee hired ({emp.id}) but skill install failed: {e}",
+            "employee_id": emp.id,
+            "name": name,
+            "nickname": nickname,
+        }
+
+    return {
+        "status": "ok",
+        "employee_id": emp.id,
+        "name": name,
+        "nickname": nickname,
+        "installed_skill": skill_name,
+        "skill_github_url": skill_github_url,
+        "install_result": (install_result or "")[:400],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tool registration — register all internal tools into the unified registry
 # ---------------------------------------------------------------------------
 
@@ -2053,6 +2193,7 @@ def _register_all_internal_tools() -> None:
     _base = [
         list_colleagues, read, ls, write, edit, pull_meeting,
         run_debate, select_debate_participants_tool,
+        assemble_specialist_from_skill,
         glob_files, grep_search,
         load_skill,
         resume_held_task, update_project_team,
