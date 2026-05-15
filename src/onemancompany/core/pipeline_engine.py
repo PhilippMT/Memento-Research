@@ -264,7 +264,7 @@ class PipelineEngine:
         # Stage 5 (Experiment Design) mirrors the Stage 4 flow: draft → debate
         # → revise → coordination (assignments table). The experiment convener
         # skill is the runbook.
-        if stage["id"] == 5:
+        elif stage["id"] == 5:
             desc += (
                 "\n## REQUIRED FIRST STEP\n"
                 'Before doing anything else, call load_skill("experiment-debate-convener") '
