@@ -354,6 +354,11 @@ def test_dispatch_producer_stage4_injects_methodology_debate_skill_trigger(tmp_p
     assert 'load_skill("methodology-debate-convener")' in desc, (
         "Stage 4 task description must instruct the producer to load the convener skill"
     )
+    # Preamble must describe the draft → debate → revise flow, not the
+    # pre-#19 "synthesise transcript into methodology document" wording.
+    assert "draft" in desc.lower() and "revise" in desc.lower(), (
+        "Stage 4 trigger preamble must mention the draft → debate → revise flow"
+    )
 
 
 def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, monkeypatch):
