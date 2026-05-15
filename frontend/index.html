@@ -570,6 +570,67 @@ function _getProject(pid) {
   return _projects.get(pid);
 }
 
+// Pull stage_results from /api/pipeline/{pid}/status and rebuild stage cards
+// in-place. Fires fire-and-forget from switchProject when the project has no
+// cached stagesHtml (typical for projects whose live WebSocket events landed
+// in a different browser session — e.g. after a page reload, or for projects
+// created via API rather than the launch form).
+async function hydrateProjectFromBackend(pid) {
+  const client = window._omcClient;
+  if (!client || typeof client.getPipelineStatus !== 'function') return;
+  let status;
+  try {
+    status = await client.getPipelineStatus(pid);
+  } catch (err) {
+    console.warn('[hydrate] pipeline status failed for', pid, err);
+    return;
+  }
+  if (!status || !status.stage_results) return;
+  // Abort if user switched away while the fetch was in flight.
+  if (_activeProjectId !== pid) return;
+
+  const stageResults = status.stage_results;
+  const completedIds = Object.keys(stageResults)
+    .map(s => parseInt(s, 10))
+    .filter(n => !Number.isNaN(n))
+    .sort((a, b) => a - b);
+  if (!completedIds.length) return;
+
+  const currentStage = status.current_stage || completedIds[completedIds.length - 1];
+  const phase = status.phase;
+
+  completedIds.forEach(sid => {
+    const meta = STAGES.find(s => s.id === sid);
+    if (!meta) return;
+    const cardId = `s${sid}`;
+    getStageCard(cardId, `Stage ${sid} — ${meta.name}`, meta.name, meta.name.slice(0, 2).toUpperCase());
+    updateProducer(cardId, stageResults[String(sid)]);
+    const isCurrent = sid === currentStage;
+    if (isCurrent && phase && phase !== 'done') {
+      setCardStatus(cardId, phase === 'reviewing' ? 'reviewing' : 'running');
+      setStage(sid, phase === 'reviewing' ? 'reviewing' : 'running');
+    } else {
+      setCardStatus(cardId, 'done');
+      setStage(sid, 'done');
+    }
+  });
+
+  if (status.critic_result) {
+    updateCritic(`s${currentStage}`, status.critic_result);
+  }
+
+  const hero = document.getElementById('heroSection');
+  if (hero) hero.style.display = 'none';
+
+  // Cache so subsequent switches don't refetch.
+  const proj = _getProject(pid);
+  proj.stagesHtml = document.getElementById('meetingsArea').innerHTML;
+  completedIds.forEach(sid => {
+    const dot = document.getElementById('sd-' + sid);
+    if (dot) proj.stageStates[sid] = dot.className.replace('stage-dot ', '').trim() || 'pending';
+  });
+}
+
 function switchProject(pid) {
   if (_activeProjectId === pid) return;
 
@@ -661,6 +722,10 @@ function switchProject(pid) {
 
   // Replay any buffered events that arrived while this project was in the background
   if (typeof replayBufferedEvents === 'function') replayBufferedEvents(pid);
+
+  // If there's no cached HTML (page was reloaded, or project was created via API),
+  // pull historical stage_results from the backend and rebuild cards in place.
+  if (!proj.stagesHtml) hydrateProjectFromBackend(pid);
 }
 
 function renderProjectList(projects) {
