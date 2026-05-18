@@ -269,6 +269,12 @@ img/local/*
 .agents/
 skills-lock.json
 skills/
+# Negate the broad `skills/` ignore for talent-bundled and default skills,
+# both of which are shipped source, not runtime state.
+!src/onemancompany/talent_market/talents/*/skills/
+!src/onemancompany/talent_market/talents/*/skills/**
+!src/onemancompany/default_skills/
+!src/onemancompany/default_skills/**
 
 # Internal dev docs (local only, not in release)
 docs/superpowers/
