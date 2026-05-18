@@ -620,6 +620,37 @@ async function hydrateProjectFromBackend(pid) {
     updateCritic(`s${currentStage}`, status.critic_result);
   }
 
+  // Backfill the workspace panel from the same stage_results / critic_result.
+  // Live runs populate _wsFiles via `file_written` WebSocket events; on a
+  // hydrated historical project there are no such events, so the panel
+  // stays empty unless we synthesise file entries from the persisted text.
+  // The naming follows OMC's on-disk convention (stage{N}_*.md).
+  const stageSkillMap = {
+    1: 'topic_refiner', 2: 'literature_surveyor', 3: 'idea_generator',
+    4: 'methodology_designer', 5: 'experiment_designer', 6: 'experimentalist',
+    7: 'result_analyst', 8: 'paper_writer', 9: 'self_reviewer',
+  };
+  completedIds.forEach(sid => {
+    const content = stageResults[String(sid)] || '';
+    if (content) {
+      const skill = stageSkillMap[sid] || `stage${sid}`;
+      addWorkspaceFile({
+        file_name: `stage${sid}_${skill}.md`,
+        size: content.length,
+        content,
+        type: 'create',
+      });
+    }
+  });
+  if (status.critic_result) {
+    addWorkspaceFile({
+      file_name: `stage${currentStage}_gate_review.md`,
+      size: status.critic_result.length,
+      content: status.critic_result,
+      type: 'create',
+    });
+  }
+
   const hero = document.getElementById('heroSection');
   if (hero) hero.style.display = 'none';
 
