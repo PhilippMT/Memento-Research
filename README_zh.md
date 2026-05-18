@@ -345,7 +345,7 @@ bash start.sh
 git clone https://github.com/1mancompany/OneManCompany.git
 cd OneManCompany
 
-# 2. 启动（自动安装 UV + Python，首次运行进入配置流程）
+# 2. 启动（自动安装 UV + Python，并基于仓库文件自举运行时数据）
 bash start.sh
 
 # 3. 打开浏览器
