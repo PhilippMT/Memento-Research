@@ -586,11 +586,19 @@ async function hydrateProjectFromBackend(pid) {
     console.warn('[hydrate] pipeline status failed for', pid, err);
     return;
   }
-  if (!status || !status.stage_results) return;
+  if (!status) return;
   // Abort if user switched away while the fetch was in flight.
   if (_activeProjectId !== pid) return;
 
-  const stageResults = status.stage_results;
+  // Workspace files come from a fresh disk scan, so they're useful even
+  // when stage_results / critic_result are stale (engine in-memory cache
+  // bug). Backfill them first, before we decide whether to early-return
+  // on missing stage_results.
+  if (Array.isArray(status.workspace_files) && status.workspace_files.length) {
+    status.workspace_files.forEach(f => addWorkspaceFile(f));
+  }
+
+  const stageResults = status.stage_results || {};
   const completedIds = Object.keys(stageResults)
     .map(s => parseInt(s, 10))
     .filter(n => !Number.isNaN(n))
@@ -620,35 +628,41 @@ async function hydrateProjectFromBackend(pid) {
     updateCritic(`s${currentStage}`, status.critic_result);
   }
 
-  // Backfill the workspace panel from the same stage_results / critic_result.
-  // Live runs populate _wsFiles via `file_written` WebSocket events; on a
-  // hydrated historical project there are no such events, so the panel
-  // stays empty unless we synthesise file entries from the persisted text.
-  // The naming follows OMC's on-disk convention (stage{N}_*.md).
-  const stageSkillMap = {
-    1: 'topic_refiner', 2: 'literature_surveyor', 3: 'idea_generator',
-    4: 'methodology_designer', 5: 'experiment_designer', 6: 'experimentalist',
-    7: 'result_analyst', 8: 'paper_writer', 9: 'self_reviewer',
-  };
-  completedIds.forEach(sid => {
-    const content = stageResults[String(sid)] || '';
-    if (content) {
-      const skill = stageSkillMap[sid] || `stage${sid}`;
+  // Backfill the workspace panel. Live runs fill it via `file_written`
+  // WebSocket events; on a hydrated historical project there are no such
+  // events. Prefer the backend's freshly-scanned workspace_files list
+  // (status.workspace_files, real on-disk files) — that path also works
+  // when the engine's in-memory stage_results is stale. Fall back to
+  // synthesising entries from stage_results / critic_result when the
+  // backend didn't include workspace_files.
+  if (Array.isArray(status.workspace_files) && status.workspace_files.length) {
+    status.workspace_files.forEach(f => addWorkspaceFile(f));
+  } else {
+    const stageSkillMap = {
+      1: 'topic_refiner', 2: 'literature_surveyor', 3: 'idea_generator',
+      4: 'methodology_designer', 5: 'experiment_designer', 6: 'experimentalist',
+      7: 'result_analyst', 8: 'paper_writer', 9: 'self_reviewer',
+    };
+    completedIds.forEach(sid => {
+      const content = stageResults[String(sid)] || '';
+      if (content) {
+        const skill = stageSkillMap[sid] || `stage${sid}`;
+        addWorkspaceFile({
+          file_name: `stage${sid}_${skill}.md`,
+          size: content.length,
+          content,
+          type: 'create',
+        });
+      }
+    });
+    if (status.critic_result) {
       addWorkspaceFile({
-        file_name: `stage${sid}_${skill}.md`,
-        size: content.length,
-        content,
+        file_name: `stage${currentStage}_gate_review.md`,
+        size: status.critic_result.length,
+        content: status.critic_result,
         type: 'create',
       });
     }
-  });
-  if (status.critic_result) {
-    addWorkspaceFile({
-      file_name: `stage${currentStage}_gate_review.md`,
-      size: status.critic_result.length,
-      content: status.critic_result,
-      type: 'create',
-    });
   }
 
   const hero = document.getElementById('heroSection');
