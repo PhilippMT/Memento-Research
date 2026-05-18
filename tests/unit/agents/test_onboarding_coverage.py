@@ -594,3 +594,50 @@ class TestExperimentSkillRunbooks:
     def test_adversarial_review_includes_experiment_quality_critic(self):
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
         assert "experiment-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]
+
+
+class TestAutoresearchRunbook:
+    """experiment_runner must auto-receive the autoresearch runbook
+    so Stage 6 dispatchers can drive the remote experiment API."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "autoresearch"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_experiment_runner_gets_autoresearch(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00300"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- experiment_runner\nname: ExpRunner\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00300")
+
+        assert (skills_dir / "autoresearch" / "SKILL.md").exists()
+
+    def test_non_experiment_runner_employee_does_not_get_autoresearch(
+        self, tmp_path, monkeypatch
+    ):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00301"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- some_other_skill\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00301")
+
+        assert not (skills_dir / "autoresearch").exists(), (
+            "Only employees with experiment_runner skill should receive autoresearch"
+        )
+
+    def test_mapping_includes_experiment_runner(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment_runner" in _SKILL_REQUIRED_RUNBOOKS
+        assert "autoresearch" in _SKILL_REQUIRED_RUNBOOKS["experiment_runner"]

@@ -1,0 +1,15 @@
+# experiments.yaml — run the autoresearch nanochat training under experiments/
+
+name: experiments
+
+resources:
+    cpus: 4+
+    accelerators: H100:1
+
+setup: |
+    source /home/zsgpu/miniconda3/bin/activate
+    cd experiments
+    uv sync
+
+run: |
+    uv run train.py
