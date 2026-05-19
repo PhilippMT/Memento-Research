@@ -3215,6 +3215,13 @@ class EmployeeManager:
 
                     dep_node.set_status(TaskPhase.BLOCKED)
                     logger.debug("[TASK LIFECYCLE] node={} → BLOCKED (dep {} failed)", dep_node.id, completed_node.id)
+                    # Populate result so the frontend's error display has a
+                    # concrete reason instead of "unknown error". Mirrors the
+                    # cascade-cancelled path above.
+                    dep_node.result = (
+                        f"Blocked: dependency "
+                        f"\"{completed_node.description_preview[:80]}\" failed."
+                    )
                     dirty = True
                     # Notify parent about blocked task
                     parent = tree.get_node(dep_node.parent_id)

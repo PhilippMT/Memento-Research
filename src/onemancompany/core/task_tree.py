@@ -35,6 +35,22 @@ from onemancompany.core.task_lifecycle import (
 # ---------------------------------------------------------------------------
 NODES_DIR = NODES_DIR_NAME
 _STATUS_MIGRATION = {"complete": "completed"}
+# WS-payload preview budgets. Result previews ship on every TaskNode update,
+# so the success-path cap is tight (parity with description_preview's 200-char
+# limit). The failure path is more generous because the frontend's "unknown
+# error" fallback otherwise gives the user nothing to act on.
+RESULT_PREVIEW_CHARS = 300
+ERROR_PREVIEW_CHARS = 1000
+# Statuses for which the frontend shows an error message. BLOCKED is included
+# because task_lifecycle.WILL_NOT_DELIVER treats it as a terminal failure
+# (dep cascade), and vessel.py:_BLOCKED_branch sets it without a real result
+# in many cases — the synthetic fallback in to_dict() guarantees a non-empty
+# signal for the UI.
+_FAILURE_STATUSES = frozenset({
+    TaskPhase.FAILED.value,
+    TaskPhase.CANCELLED.value,
+    TaskPhase.BLOCKED.value,
+})
 
 
 @dataclass
@@ -187,7 +203,8 @@ class TaskNode:
         return self.node_type in (NodeType.CEO_PROMPT, NodeType.CEO_FOLLOWUP, NodeType.CEO_REQUEST)
 
     def to_dict(self) -> dict:
-        return {
+        raw = self.result or ""
+        data = {
             "id": self.id,
             "parent_id": self.parent_id,
             "children_ids": list(self.children_ids),
@@ -217,6 +234,26 @@ class TaskNode:
             "stall_retry_count": self.stall_retry_count,
             "directives_count": len(self.directives),
         }
+        if raw:
+            # Head-biased: a quick glance at what the task produced.
+            data["result_preview"] = raw[:RESULT_PREVIEW_CHARS]
+        if self.status in _FAILURE_STATUSES:
+            # Tail-biased: Python tracebacks and provider stack traces put the
+            # exception class and message at the bottom; the head is usually
+            # framework preamble. For short messages the slice is a no-op.
+            #
+            # Synthesise a non-empty signal when result is missing — agents can
+            # FAIL/CANCEL/BLOCK before writing anything, and the frontend's
+            # ``task.error || task.result || 'unknown error'`` chain otherwise
+            # bottoms out at "unknown error" with no actionable hint.
+            if raw:
+                data["error"] = raw[-ERROR_PREVIEW_CHARS:]
+            else:
+                data["error"] = (
+                    f"Task ended with status={self.status} but no result was recorded "
+                    f"(node {self.id})."
+                )
+        return data
 
     @classmethod
     def from_dict(cls, d: dict) -> TaskNode:
