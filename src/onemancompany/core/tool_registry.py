@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import dataclass
 
@@ -297,6 +298,7 @@ class ToolRegistry:
 
 # Module-level singleton
 tool_registry = ToolRegistry()
+_tool_execution_locks: dict[str, asyncio.Lock] = {}
 
 
 # ------------------------------------------------------------------
@@ -353,15 +355,19 @@ async def execute_tool(employee_id: str, tool_name: str, args: dict) -> dict:
             return {"status": "blocked", "message": f"Blocked by hook: {block_reason}"}
         args = get_updated_input(pre_results, args)
 
-        # Call the tool
-        if hasattr(fn, "ainvoke"):
-            result = await fn.ainvoke(args)
-        elif hasattr(fn, "invoke"):
-            result = fn.invoke(args)
-        elif inspect.iscoroutinefunction(fn):
-            result = await fn(**args)
-        else:
-            result = fn(**args)
+        # Call the tool. LangGraph may issue multiple calls to the same tool in
+        # parallel. Many asset tools maintain on-disk sidecar state with atomic
+        # tmp+rename writes, and fixed tmp names can race inside one process.
+        lock = _tool_execution_locks.setdefault(tool_name, asyncio.Lock())
+        async with lock:
+            if hasattr(fn, "ainvoke"):
+                result = await fn.ainvoke(args)
+            elif hasattr(fn, "invoke"):
+                result = fn.invoke(args)
+            elif inspect.iscoroutinefunction(fn):
+                result = await fn(**args)
+            else:
+                result = fn(**args)
 
         # Normalize result
         if isinstance(result, dict):
