@@ -469,6 +469,23 @@ class TaskTree:
             if cid in self._nodes
         )
 
+    def has_pipeline_managed_nodes(self) -> bool:
+        """True if any node in the tree carries the ``pipeline_managed``
+        metadata tag (set by ``PipelineEngine._dispatch_to_employee``).
+
+        Pipeline-managed projects own their own completion lifecycle via
+        ``pipeline_engine._emit_pipeline_complete``. Legacy EA-anchor
+        heuristics in ``is_project_complete`` and downstream vessel.py
+        completion logic must defer to the engine for these trees, not
+        mistake the first TASK child of the CEO root for an EA
+        orchestrator.
+        """
+        for node in self._nodes.values():
+            meta = getattr(node, "metadata", None) or {}
+            if meta.get("pipeline_managed"):
+                return True
+        return False
+
     def is_project_complete(self) -> bool:
         """Check if the project is fully complete — ready for retrospective.
 
@@ -476,6 +493,16 @@ class TaskTree:
         every child subtree of the EA anchor is fully resolved (RESOLVED).
         The EA anchor itself may still be COMPLETED (not yet ACCEPTED)
         because acceptance happens as part of the project completion flow.
+
+        This is the *legacy* completion semantic and is meaningful only
+        for trees orchestrated by the EA. Pipeline-managed trees own
+        their own completion via ``PipelineEngine._emit_pipeline_complete``;
+        callers must guard with ``has_pipeline_managed_nodes()`` before
+        using this signal, otherwise Stage 1's producer is mis-detected
+        as the "EA anchor" and the project is declared done as soon as
+        Stage 1 finishes. (Mixed trees — e.g. a pipeline plus a product-
+        owner sidecar followup — must not be silently pinned to False
+        here; the gating belongs at the call site.)
         """
         ea = self.get_ea_node()
         if not ea:

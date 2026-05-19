@@ -467,3 +467,182 @@ def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, mon
     assert "methodology-debate-convener" not in desc, (
         "Non-Stage-4 stages must not carry the debate convener trigger"
     )
+
+
+# ---------------------------------------------------------------------------
+# on_task_failed — producer failure handling (PR #34)
+# ---------------------------------------------------------------------------
+
+
+def test_on_task_failed_critic_phase_auto_passes(tmp_path, monkeypatch):
+    """A FAILED *critic* must not re-dispatch the producer (which would
+    discard the existing producer output and double-bill tokens). Mirrors
+    the "no critic employee found" branch in _dispatch_critic by
+    auto-passing on the stored producer output."""
+    on_pass_calls = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-meth")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_to_employee",
+        lambda self, *args: pytest.fail("must not re-dispatch on critic failure"),
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_stage_event",
+        lambda self, *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_gate_event",
+        lambda self, *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_on_critic_pass",
+        lambda self, result, confidence=None: on_pass_calls.append((result, confidence)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"]["4"] = "producer output for stage 4"
+
+    engine.on_task_failed("critic-emp", "node-x", "critic crashed: OOM")
+
+    assert on_pass_calls == [("producer output for stage 4", None)]
+    assert engine.state.get("retries", 0) == 0, "retries must not increment on critic failure"
+
+
+def test_on_task_failed_retries_until_exhausted(tmp_path, monkeypatch):
+    """A FAILED producer is treated like a critic REJECT: retry up to
+    MAX_RETRIES, then hold the gate for CEO. Crucially, the failure must
+    NOT fall through to vessel.py's legacy completion check (which would
+    misdeclare the project done)."""
+    dispatched = []
+    emitted = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-meth")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_to_employee",
+        lambda self, *args: dispatched.append(args),
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_stage_event",
+        lambda self, *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_gate_event",
+        lambda self, *args, **kwargs: emitted.append(("gate", args, kwargs)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "producer"
+
+    # First failure: retry 1
+    engine.on_task_failed("emp-meth", "node-a", "TypeError: …")
+    assert engine.state["retries"] == 1
+    assert engine.state["phase"] == "producer"
+    assert dispatched, "should re-dispatch producer"
+    assert "TypeError" in dispatched[-1][1]
+
+    # Second failure: retry 2
+    engine.on_task_failed("emp-meth", "node-b", "OOM")
+    assert engine.state["retries"] == 2
+
+    # Third failure: retry 3
+    engine.on_task_failed("emp-meth", "node-c", "timeout")
+    assert engine.state["retries"] == 3
+
+    # Fourth failure: retries exhausted → gate, no new dispatch
+    redispatch_count_before = len(dispatched)
+    engine.on_task_failed("emp-meth", "node-d", "still broken")
+    assert engine.state["phase"] == "gate"
+    assert len(dispatched) == redispatch_count_before, "must not re-dispatch when exhausted"
+    assert any(kind == "gate" for kind, _, _ in emitted)
+
+
+def test_emit_pipeline_complete_marks_ceo_root_finished(tmp_path, monkeypatch):
+    """When the pipeline truly completes (after stage 9 / end_stage), the
+    engine must close the CEO root so the UI's project-complete affordance
+    fires here and only here. Previously the legacy EA-anchor heuristic
+    in vessel.py closed the root after Stage 1, before the pipeline was
+    actually done."""
+    from onemancompany.core.task_tree import TaskTree, register_tree, get_tree
+    from onemancompany.core.task_lifecycle import NodeType, TaskPhase
+    from onemancompany.core.config import TASK_TREE_FILENAME
+
+    tree = TaskTree(project_id="p1")
+    root = tree.create_root("00001", "do research")
+    root.node_type = NodeType.CEO_PROMPT
+    root.set_status(TaskPhase.PROCESSING)
+    tree_path = tmp_path / TASK_TREE_FILENAME
+    tree.save(tree_path)
+    register_tree(tree_path, tree)
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_async", lambda self, payload: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine._emit_pipeline_complete()
+
+    root2 = tree.get_node(tree.root_id)
+    assert root2.status == TaskPhase.FINISHED.value
+
+
+@pytest.mark.parametrize("starting_status", ["failed", "blocked", "cancelled"])
+def test_emit_pipeline_complete_skips_finalize_on_illegal_source(tmp_path, monkeypatch, starting_status):
+    """If the CEO root is in a state from which COMPLETED is illegal
+    (FAILED / BLOCKED / CANCELLED), ``_mark_ceo_root_finished`` must
+    log-and-bail instead of crashing with IllegalTransitionError. The
+    pipeline_complete event still emits — the root simply isn't walked
+    further."""
+    from onemancompany.core.task_tree import TaskTree, register_tree
+    from onemancompany.core.task_lifecycle import NodeType, TaskPhase
+    from onemancompany.core.config import TASK_TREE_FILENAME
+
+    tree = TaskTree(project_id="p1")
+    root = tree.create_root("00001", "do research")
+    root.node_type = NodeType.CEO_PROMPT
+    # Walk through legal transitions to reach the requested terminal-ish state.
+    if starting_status == "failed":
+        root.set_status(TaskPhase.PROCESSING)
+        root.set_status(TaskPhase.FAILED)
+    elif starting_status == "blocked":
+        root.set_status(TaskPhase.BLOCKED)
+    elif starting_status == "cancelled":
+        root.set_status(TaskPhase.CANCELLED)
+    tree_path = tmp_path / TASK_TREE_FILENAME
+    tree.save(tree_path)
+    register_tree(tree_path, tree)
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_async", lambda self, payload: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine._emit_pipeline_complete()  # must NOT raise IllegalTransitionError
+
+    # Root stays in its original status — not coerced through illegal path.
+    root_after = tree.get_node(tree.root_id)
+    assert root_after.status == starting_status
+
+
+def test_emit_pipeline_complete_idempotent_on_already_finished_root(tmp_path, monkeypatch):
+    """If the CEO root is already FINISHED (e.g. via a prior call), the
+    second emit must not raise or attempt illegal status transitions."""
+    from onemancompany.core.task_tree import TaskTree, register_tree
+    from onemancompany.core.task_lifecycle import NodeType, TaskPhase
+    from onemancompany.core.config import TASK_TREE_FILENAME
+
+    tree = TaskTree(project_id="p1")
+    root = tree.create_root("00001", "do research")
+    root.node_type = NodeType.CEO_PROMPT
+    root.set_status(TaskPhase.PROCESSING)
+    root.set_status(TaskPhase.COMPLETED)
+    root.set_status(TaskPhase.ACCEPTED)
+    root.set_status(TaskPhase.FINISHED)
+    tree_path = tmp_path / TASK_TREE_FILENAME
+    tree.save(tree_path)
+    register_tree(tree_path, tree)
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_async", lambda self, payload: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine._emit_pipeline_complete()  # must not raise

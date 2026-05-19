@@ -370,6 +370,72 @@ class PipelineEngine:
                     self._save()
                     self._emit_gate_event(stage["id"], confidence, exhausted=True)
 
+    def on_task_failed(self, employee_id: str, node_id: str, result: str):
+        """Called by vessel when a pipeline-managed task fails (the agent
+        threw, timed out, or otherwise produced no usable output).
+
+        Branches on the current phase:
+
+        * ``producer`` failure → retry the producer with the failure
+          context as feedback (up to ``MAX_RETRIES``), then open the CEO
+          gate. Symmetric with a critic REJECT.
+
+        * ``critic`` failure → auto-pass the stage using the already-stored
+          producer output. Mirrors the "no critic employee found" branch
+          in ``_dispatch_critic``. Re-running the producer would discard
+          its existing output and double-bill tokens for a problem that
+          isn't the producer's.
+
+        Without this hook a failed pipeline node would fall through to
+        vessel.py's legacy completion check, which would mistake the
+        first-completed stage anchor for an EA orchestrator and declare
+        the project complete.
+        """
+        stage = self._stage_def()
+        current_phase = self.phase
+
+        if current_phase == "critic":
+            stored = self.state.get("stage_results", {}).get(str(stage["id"]), "")
+            logger.warning(
+                "[PIPELINE] Stage {} critic FAILED — auto-passing on stored producer output (len={})",
+                stage["id"], len(stored),
+            )
+            self._on_critic_pass(stored, confidence=None)
+            return
+
+        if current_phase != "producer":
+            # Should not happen — gate/done/failed phases mean no task is in flight.
+            logger.warning(
+                "[PIPELINE] on_task_failed called in unexpected phase {} (stage {}); ignoring",
+                current_phase, stage["id"],
+            )
+            return
+
+        truncated = (result or "(no output)").strip()[:600]
+        failure_feedback = (
+            f"Producer for Stage {stage['id']} ({stage['name']}) failed without producing a deliverable. "
+            f"Failure context:\n{truncated}"
+        )
+        retries = self.state.get("retries", 0)
+        if retries < MAX_RETRIES:
+            self.state["retries"] = retries + 1
+            self.state["phase"] = "producer"
+            self._save()
+            logger.warning(
+                "[PIPELINE] Stage {} producer FAILED (retry {}/{}) — re-dispatching",
+                stage["id"], retries + 1, MAX_RETRIES,
+            )
+            self._emit_stage_event("stage_failed", stage["id"])
+            self._dispatch_producer(feedback=failure_feedback)
+        else:
+            logger.error(
+                "[PIPELINE] Stage {} exhausted retries after producer failure — holding for CEO",
+                stage["id"],
+            )
+            self.state["phase"] = "gate"
+            self._save()
+            self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+
     def _on_critic_pass(self, result: str, confidence: float = None):
         """Critic passed → hold for CEO gate."""
         stage = self._stage_def()
@@ -517,6 +583,11 @@ class PipelineEngine:
 
     def _emit_pipeline_complete(self):
         import asyncio
+        # Close the CEO root in the task tree so the UI's
+        # "project complete" affordance fires HERE — at the end of the
+        # pipeline — instead of at the legacy EA-anchor completion point
+        # (which mis-fired after Stage 1).
+        self._mark_ceo_root_finished()
         payload = {
             "type": "pipeline_complete",
             "project_id": self.project_id,
@@ -528,3 +599,75 @@ class PipelineEngine:
             loop.create_task(self._emit_async(payload))
         except RuntimeError as exc:
             logger.debug("Skipping pipeline complete event; no running event loop: {}", exc)
+
+    def _mark_ceo_root_finished(self) -> None:
+        """On pipeline completion, walk the CEO root through legal status
+        transitions to FINISHED so downstream consumers (project archive,
+        frontend completion banner) see the project as closed.
+
+        Status transitions are validated against ``VALID_TRANSITIONS`` per
+        step. If any step is illegal (e.g. the root is in BLOCKED/FAILED/
+        CANCELLED), the method logs a warning and bails — the caller
+        should not assume the root reached FINISHED.
+        """
+        from onemancompany.core.task_tree import get_tree
+        from onemancompany.core.task_lifecycle import (
+            NodeType, TaskPhase, can_transition,
+        )
+        from onemancompany.core.config import TASK_TREE_FILENAME
+
+        tree_path = Path(self.project_dir) / TASK_TREE_FILENAME
+        if not tree_path.exists():
+            return
+        try:
+            tree = get_tree(tree_path, project_id=self.project_id)
+            root = tree.get_node(tree.root_id) if tree.root_id else None
+            if not root or root.node_type != NodeType.CEO_PROMPT:
+                return
+            if root.status == TaskPhase.FINISHED.value:
+                return  # already terminal — idempotent
+
+            # FAILED/CANCELLED roots are explicitly out of scope: the project
+            # was marked failed/cancelled elsewhere (e.g. vessel root-failed
+            # path), so finalizing it as a completed pipeline would
+            # contradict that decision. Walking FAILED → PROCESSING → ...
+            # → FINISHED is technically legal under VALID_TRANSITIONS, but
+            # semantically wrong; refuse explicitly.
+            if root.status in (TaskPhase.FAILED.value, TaskPhase.CANCELLED.value):
+                logger.warning(
+                    "[PIPELINE] Refusing to finalize CEO root {} from {} — pipeline completion conflicts with terminal failure/cancellation",
+                    root.id, root.status,
+                )
+                return
+
+            # Walk PROCESSING → COMPLETED → ACCEPTED → FINISHED, validating
+            # each step. Skip steps the node is already past.
+            target_chain = [
+                TaskPhase.PROCESSING,
+                TaskPhase.COMPLETED,
+                TaskPhase.ACCEPTED,
+                TaskPhase.FINISHED,
+            ]
+            for target in target_chain:
+                if root.status == target.value:
+                    continue
+                current = TaskPhase(root.status)
+                if not can_transition(current, target):
+                    logger.warning(
+                        "[PIPELINE] Cannot finalize CEO root {}: illegal transition {} → {} (skipping rest)",
+                        root.id, current.value, target.value,
+                    )
+                    return
+                root.set_status(target)
+
+            # Synchronous save here on purpose: pipeline completion is a
+            # rare, ordering-critical event. Async save would let external
+            # readers see a stale tree between the in-memory mutation and
+            # the background flush.
+            tree.save(tree_path)
+            logger.info(
+                "[PIPELINE] Marked CEO root {} → FINISHED on pipeline completion",
+                root.id,
+            )
+        except Exception as exc:  # pragma: no cover — defensive logging
+            logger.warning("[PIPELINE] Failed to finalize CEO root on completion: {}", exc)

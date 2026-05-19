@@ -659,6 +659,25 @@ class TestSubtreeResolved:
         child.status = "accepted"
         assert tree.is_project_complete() is True
 
+    def test_has_pipeline_managed_nodes_helper(self):
+        """Predicate for callers (vessel.py) to gate legacy completion logic.
+
+        ``is_project_complete`` itself keeps its legacy EA-anchor semantics —
+        the pipeline-vs-EA decision belongs at the call site, not inside
+        this generic method. Otherwise mixed trees (a pipeline plus a
+        product-owner sidecar followup, possible per task_followup route 3)
+        would be silently pinned to never-complete inside is_project_complete.
+        """
+        tree = TaskTree(project_id="proj1")
+        root = tree.create_root("00001", "CEO prompt")
+        root.node_type = "ceo_prompt"
+        stage = tree.add_child(root.id, "00006", "Stage 1", [])
+        stage.node_type = "task"
+
+        assert tree.has_pipeline_managed_nodes() is False
+        stage.metadata = {"pipeline_managed": True}
+        assert tree.has_pipeline_managed_nodes() is True
+
 
 class TestTaskTreeContentExternalization:
     def test_save_creates_node_content_files(self, tmp_path):
