@@ -11,6 +11,7 @@ task tree for node management, and WebSocket events for frontend updates.
 
 from __future__ import annotations
 
+import re
 import yaml
 from pathlib import Path
 from loguru import logger
@@ -37,6 +38,17 @@ STAGES = [
 
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
+
+# Iteration identifier used in git tag names (``<iteration>/stage-<N>``).
+# The literal directory name (e.g. ``iter_001``) is fine — git tag names
+# allow underscores. Centralised here so the engine and project_repo
+# agree on tag format.
+_DEFAULT_ITERATION = "iter_001"
+
+
+class RevertNotAllowedError(Exception):
+    """Raised when ``revert_to_stage`` is called in a phase that would
+    clobber in-flight work. Only ``gate`` and ``done`` are safe."""
 
 # Tag for pipeline-managed nodes so vessel can identify them
 PIPELINE_NODE_TAG = "pipeline_managed"
@@ -216,6 +228,31 @@ class PipelineEngine:
     # Public API — called by routes.py and vessel.py
     # ------------------------------------------------------------------
 
+    def _iteration_id(self) -> str:
+        """Identifier used in git tag names. Standard layout is
+        ``.../iterations/iter_NNN``; we use the basename directly so
+        multi-iteration projects keep their tag namespaces separate.
+
+        For legacy / non-standard layouts where the basename doesn't
+        match ``iter_\\d+``, we hash the full project_dir into a stable
+        synthetic id to avoid cross-iteration tag collisions (which
+        would silently overwrite each other under ``tag -f``).
+        """
+        name = Path(self.project_dir).name
+        if name and re.match(r"^iter_\d+$", name):
+            return name
+        if not name:
+            return _DEFAULT_ITERATION
+        # Non-standard dir name. Derive a stable synthetic id from the
+        # path so different projects with the same basename don't collide.
+        import hashlib
+        digest = hashlib.sha1(self.project_dir.encode("utf-8")).hexdigest()[:8]
+        logger.debug(
+            "[PIPELINE] Non-standard project dir basename {!r}; using synthetic iteration id iter_{}",
+            name, digest,
+        )
+        return f"iter_{digest}"
+
     def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None):
         """Begin the pipeline from the given stage."""
         self.state["current_stage"] = max(1, min(start_stage, 9))
@@ -226,6 +263,14 @@ class PipelineEngine:
         self.state["phase"] = "producer"
         self.state["retries"] = 0
         self._save()
+        # Auto-init the workspace as a git repo so per-stage commits and
+        # later revert-to-here ops have somewhere to land. Idempotent —
+        # existing repos are left alone.
+        from onemancompany.core import project_repo
+        try:
+            project_repo.ensure_initialized(self.project_dir, iteration=self._iteration_id())
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("[PIPELINE] project_repo init failed for {}: {}", self.project_dir, exc)
         logger.info("[PIPELINE] Starting from stage {} to stage {}", self.state["current_stage"], self.state["end_stage"])
         self._dispatch_producer()
 
@@ -441,8 +486,125 @@ class PipelineEngine:
         stage = self._stage_def()
         self.state["phase"] = "gate"
         self._save()
+        # Commit the workspace as the canonical checkpoint for this stage
+        # before opening the gate. This is the quiescent moment: producer
+        # and critic are both finished, nothing else is writing files.
+        # The tag ``<iteration>/stage-<N>`` lets the user later revert
+        # here to redo this stage with new instructions.
+        from onemancompany.core import project_repo
+        try:
+            project_repo.commit_stage(
+                self.project_dir,
+                iteration=self._iteration_id(),
+                stage=stage["id"],
+                stage_name=stage["name"],
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "[PIPELINE] commit_stage failed at stage {}: {}", stage["id"], exc,
+            )
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)
+
+    # ------------------------------------------------------------------
+    # Public API — revert to a previous stage with new instructions
+    # ------------------------------------------------------------------
+
+    def revert_to_stage(
+        self, *, stage: int, instructions: str, branch_name: str | None = None,
+    ) -> str:
+        """Create a feature branch rooted at stage ``stage - 1``'s tag,
+        switch the workspace to it, queue the user's instructions for
+        the stage's producer, and re-dispatch.
+
+        Returns the (possibly auto-generated) branch name so callers can
+        surface it to the user.
+
+        Raises ``RevertNotAllowedError`` if the engine is mid-flight
+        (phase != gate / done). Raises ``ValueError`` for out-of-range
+        stage numbers.
+
+        The semantics deliberately keep the *current branch's* tags and
+        commits intact — reverting forks; it does not destroy history.
+        Returning to the original branch (in a future PR) is a separate
+        checkout op.
+        """
+        if self.phase not in ("gate", "done"):
+            raise RevertNotAllowedError(
+                f"Cannot revert while pipeline phase is '{self.phase}'. "
+                "Wait until the current stage reaches a gate."
+            )
+
+        end = self.state.get("end_stage", 9)
+        if not (1 <= stage <= end):
+            raise ValueError(
+                f"revert_to_stage: stage must be in [1, {end}]; got {stage}"
+            )
+
+        instructions = (instructions or "").strip()
+
+        # Validate dispatchability BEFORE touching git. The whole revert
+        # operation should be either fully successful or fully a no-op;
+        # otherwise we leave the user on a new branch with corrupt state
+        # and no in-flight task. ``stage_assignments`` honours user
+        # overrides; otherwise the engine resolves by skill from
+        # ``employee_configs``.
+        stage_def = STAGES[stage - 1]
+        assignments = self.state.get("stage_assignments", {})
+        assigned = assignments.get(str(stage_def["id"]))
+        employee_id = assigned if assigned else _find_employee_by_skill(stage_def["skill"])
+        if not employee_id:
+            raise RevertNotAllowedError(
+                f"Cannot revert to stage {stage}: no employee with skill "
+                f"'{stage_def['skill']}' is available to run the producer."
+            )
+
+        from onemancompany.core import project_repo
+        new_branch = project_repo.checkout_branch_from_stage(
+            self.project_dir,
+            iteration=self._iteration_id(),
+            stage=stage,
+            branch_name=branch_name,
+        )
+
+        # The checkout flipped pipeline_state.yaml back to its previous
+        # snapshot. Reload from disk; refuse to proceed if the snapshot
+        # somehow lacks a state file (would silently retain the abandoned
+        # branch's state otherwise — corrupting the new branch on the
+        # next ``_save``).
+        loaded = _load_state(self.project_dir)
+        if not loaded:
+            raise RevertNotAllowedError(
+                f"Reverted to branch '{new_branch}' but the checkout did "
+                f"not restore a pipeline_state.yaml. Workspace may be "
+                f"corrupt — investigate before retrying."
+            )
+        self.state = loaded
+        self.state["current_stage"] = stage
+        self.state["phase"] = "producer"
+        self.state["retries"] = 0
+        self.state["critic_result"] = None
+        self.state["active_node_id"] = None
+        self.state["active_employee_id"] = None
+        # Drop any stage results at or beyond the revert point — they
+        # belong to the abandoned branch and would mislead the producer's
+        # context-building.
+        sr = self.state.get("stage_results", {})
+        self.state["stage_results"] = {
+            sid: result for sid, result in sr.items() if int(sid) < stage
+        }
+        # Queue the user's instructions; _dispatch_producer consumes them
+        # via _consume_pending_feedback and prepends them to the prompt.
+        if instructions:
+            self.state["pending_user_feedback"] = instructions
+        self._save()
+
+        logger.info(
+            "[PIPELINE] Reverted to stage {} on branch '{}' with {} chars of instructions",
+            stage, new_branch, len(instructions),
+        )
+        self._dispatch_producer()
+        return new_branch
 
     # Keywords that trigger a *full re-dispatch* of the current stage from
     # scratch (retries=0). Kept narrow on purpose: every CEO chat at the

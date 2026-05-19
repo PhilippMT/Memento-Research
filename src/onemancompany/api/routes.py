@@ -933,6 +933,93 @@ async def resume_pipeline_breakpoint(body: dict):
     return {"status": "resumed", "stage": stage, "pipeline_stage": engine.current_stage, "phase": engine.phase}
 
 
+@router.post("/api/pipeline/{project_id}/revert")
+async def revert_pipeline_to_stage(project_id: str, body: dict):
+    """Revert the pipeline to a previously completed stage with new
+    instructions, then re-run forward.
+
+    Body: ``{"stage": <int>, "instructions": "<text>", "branch_name": "<optional>"}``
+
+    Implementation: forks a new git branch ``feat-stage<N>-<id>`` rooted
+    at the previous stage's commit, restores the workspace to that
+    snapshot, queues the user's instructions, and re-dispatches the
+    stage's producer. Original branch and tags are preserved in git
+    history; this is a fork, not a destructive rewrite.
+
+    Pipeline must be at a gate (or done) — reverting mid-stage would
+    clobber files an agent is writing.
+    """
+    from onemancompany.core.pipeline_engine import (
+        get_or_load_pipeline, RevertNotAllowedError,
+    )
+    from onemancompany.core.project_archive import get_project_dir
+    from onemancompany.core import project_repo
+
+    stage = body.get("stage")
+    instructions = (body.get("instructions") or "").strip()
+    branch_name = body.get("branch_name") or None
+
+    if not isinstance(stage, int):
+        raise HTTPException(status_code=400, detail="Missing or invalid 'stage' (int)")
+    if not instructions:
+        raise HTTPException(status_code=400, detail="Missing 'instructions' (text)")
+
+    pdir = str(get_project_dir(project_id))
+    if not pdir:
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    engine = get_or_load_pipeline(project_id, pdir)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No active pipeline for this project")
+
+    try:
+        new_branch = engine.revert_to_stage(
+            stage=stage, instructions=instructions, branch_name=branch_name,
+        )
+    except RevertNotAllowedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except project_repo.DirtyWorkspaceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except project_repo.StageNotCommittedError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "status": "reverted",
+        "stage": engine.current_stage,
+        "phase": engine.phase,
+        "branch": new_branch,
+    }
+
+
+@router.get("/api/pipeline/{project_id}/branches")
+async def list_pipeline_branches(project_id: str):
+    """Enumerate the project's git branches for the sidebar's
+    "you are on branch X" indicator. Returns ``[]`` when the repo
+    hasn't been initialised yet (legacy projects) or when git ops
+    fail (corrupt .git). A 200 with empty data is preferable to a
+    500 here — the sidebar treats absent branch info as "no fork
+    available yet" rather than as an error condition."""
+    from onemancompany.core.project_archive import get_project_dir
+    from onemancompany.core import project_repo
+
+    pdir = str(get_project_dir(project_id))
+    if not pdir:
+        raise HTTPException(status_code=404, detail="Project directory not found")
+    try:
+        return {
+            "current": project_repo.current_branch(pdir),
+            "branches": project_repo.list_branches(pdir),
+        }
+    except Exception as exc:
+        logger.warning(
+            "[branches] git introspection failed for project {}: {}",
+            project_id, exc,
+        )
+        return {"current": None, "branches": []}
+
+
 @router.get("/api/pipeline/{project_id}/status")
 async def pipeline_status(project_id: str):
     """Get current pipeline state for a project."""
