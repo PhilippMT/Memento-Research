@@ -646,3 +646,157 @@ def test_emit_pipeline_complete_idempotent_on_already_finished_root(tmp_path, mo
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine._emit_pipeline_complete()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# revert_to_stage — git-backed checkpoint + new instructions + re-run
+# ---------------------------------------------------------------------------
+
+
+def test_start_calls_ensure_initialized(tmp_path, monkeypatch):
+    """Engine.start should auto-init a git repo in the workspace so
+    subsequent commit_stage calls have somewhere to commit."""
+    init_calls = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+
+    from onemancompany.core import project_repo
+    monkeypatch.setattr(
+        project_repo, "ensure_initialized",
+        lambda repo_dir, iteration: init_calls.append((repo_dir, iteration)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.start(start_stage=1, end_stage=3)
+
+    assert init_calls, "engine.start must call project_repo.ensure_initialized"
+    assert init_calls[0][0] == str(tmp_path)
+
+
+def test_on_critic_pass_commits_and_tags_stage(tmp_path, monkeypatch):
+    """After a stage passes, the engine commits the workspace and tags
+    the commit so the user can later revert here."""
+    commit_calls = []
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *args, **kwargs: None)
+
+    from onemancompany.core import project_repo
+    def _fake_commit(repo_dir, iteration, stage, stage_name):
+        commit_calls.append((repo_dir, iteration, stage, stage_name))
+        return "deadbeef"
+    monkeypatch.setattr(project_repo, "commit_stage", _fake_commit)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 3
+    engine._on_critic_pass("stage 3 output", confidence=0.9)
+
+    assert commit_calls, "critic-pass must trigger commit_stage"
+    repo_dir, iteration, stage, stage_name = commit_calls[0]
+    assert repo_dir == str(tmp_path)
+    assert stage == 3
+    assert "Idea Generation" in stage_name  # STAGES[2].name
+
+
+def test_revert_to_stage_checkouts_branch_and_redispatches(tmp_path, monkeypatch):
+    """revert_to_stage(N, instructions) should:
+       1. Refuse if engine is mid-flight (only gate/done allowed).
+       2. Create a feature branch rooted at the previous stage's tag.
+       3. Reload state from disk (checkout flipped the file).
+       4. Set current_stage=N, phase=producer, retries=0.
+       5. Queue the user's instructions for stage N's producer.
+       6. Re-dispatch.
+    """
+    checkout_calls = []
+    redispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_to_employee",
+        lambda self, eid, desc, title: redispatched.append((eid, desc, title)),
+    )
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+
+    from onemancompany.core import project_repo
+    def fake_checkout(repo_dir, iteration, stage, branch_name=None):
+        checkout_calls.append((repo_dir, iteration, stage, branch_name))
+        # Simulate the disk-side effect of a checkout: write a fresh
+        # pipeline_state.yaml as if it had been restored from the prior tag.
+        from pathlib import Path
+        import yaml
+        prior_state = {
+            "topic": "topic",
+            "current_stage": 2,
+            "phase": "gate",
+            "stage_results": {"1": "stage 1 result"},
+            "retries": 0,
+            "end_stage": 9,
+        }
+        (Path(repo_dir) / pe.STATE_FILENAME).write_text(yaml.safe_dump(prior_state))
+        return branch_name or "feat-stage3-abcdef"
+    monkeypatch.setattr(project_repo, "checkout_branch_from_stage", fake_checkout)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "gate"
+    engine.state["retries"] = 2
+    engine.state["stage_results"] = {
+        "1": "...", "2": "...", "3": "...", "4": "...", "5": "...", "6": "...",
+    }
+    engine._save()
+
+    branch = engine.revert_to_stage(stage=3, instructions="please use H2O instead")
+
+    assert checkout_calls, "checkout_branch_from_stage must be called"
+    assert checkout_calls[0][2] == 3, "checkout target must be the stage being reverted to"
+    assert branch == "feat-stage3-abcdef"
+
+    # State was reloaded from disk (current_stage=2 came from disk), then
+    # advanced to the revert target (3), with phase reset to producer.
+    assert engine.state["current_stage"] == 3
+    assert engine.state["phase"] == "producer"
+    assert engine.state["retries"] == 0
+    # Stale fields from the pre-revert state should be cleared.
+    assert engine.state.get("critic_result") in (None, "")
+    # Producer was re-dispatched, and the instructions reached its prompt
+    # via the pending-feedback queue → _consume_pending_feedback drain.
+    assert redispatched, "producer must be re-dispatched after revert"
+    _eid, desc, _title = redispatched[0]
+    assert "please use H2O instead" in desc, (
+        "user's revert instructions must appear in the producer's prompt"
+    )
+    # Queue is drained after dispatch (single-use).
+    assert engine.state.get("pending_user_feedback", "") == ""
+
+
+def test_revert_to_stage_refuses_when_engine_mid_flight(tmp_path, monkeypatch):
+    """Cannot revert while a producer or critic is running — workspace is
+    in-flight, git checkout would clobber files mid-write."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "producer"  # mid-flight
+    engine._save()
+
+    with pytest.raises(pe.RevertNotAllowedError):
+        engine.revert_to_stage(stage=2, instructions="redo with X")
+
+
+def test_revert_to_stage_validates_stage_bounds(tmp_path, monkeypatch):
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5
+    engine.state["phase"] = "gate"
+    engine.state["end_stage"] = 9
+    engine._save()
+
+    with pytest.raises(ValueError):
+        engine.revert_to_stage(stage=0, instructions="x")
+    with pytest.raises(ValueError):
+        engine.revert_to_stage(stage=10, instructions="x")
