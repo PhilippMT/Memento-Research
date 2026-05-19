@@ -35,6 +35,7 @@ from onemancompany.core.task_lifecycle import (
 # ---------------------------------------------------------------------------
 NODES_DIR = NODES_DIR_NAME
 _STATUS_MIGRATION = {"complete": "completed"}
+RESULT_PREVIEW_CHARS = 1000
 
 
 @dataclass
@@ -187,7 +188,8 @@ class TaskNode:
         return self.node_type in (NodeType.CEO_PROMPT, NodeType.CEO_FOLLOWUP, NodeType.CEO_REQUEST)
 
     def to_dict(self) -> dict:
-        return {
+        result_preview = (self.result or "")[:RESULT_PREVIEW_CHARS]
+        data = {
             "id": self.id,
             "parent_id": self.parent_id,
             "children_ids": list(self.children_ids),
@@ -217,6 +219,11 @@ class TaskNode:
             "stall_retry_count": self.stall_retry_count,
             "directives_count": len(self.directives),
         }
+        if result_preview:
+            data["result_preview"] = result_preview
+        if self.status in (TaskPhase.FAILED.value, TaskPhase.CANCELLED.value) and result_preview:
+            data["error"] = result_preview
+        return data
 
     @classmethod
     def from_dict(cls, d: dict) -> TaskNode:

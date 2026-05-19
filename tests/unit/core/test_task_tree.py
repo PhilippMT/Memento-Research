@@ -510,7 +510,7 @@ class TestTaskNodeContentExternalization:
         assert node._content_loaded is True
         assert node.description == ""
 
-    def test_to_dict_excludes_description_and_result(self):
+    def test_to_dict_excludes_full_description_and_result(self):
         node = TaskNode(employee_id="e1")
         node.description = "big text"
         node.result = "big result"
@@ -518,6 +518,17 @@ class TestTaskNodeContentExternalization:
         assert "description" not in d
         assert "result" not in d
         assert d["description_preview"] == "big text"
+        assert d["result_preview"] == "big result"
+
+    def test_failed_to_dict_includes_error_for_ws_payload(self):
+        node = TaskNode(employee_id="e1")
+        node.status = TaskPhase.FAILED.value
+        node.result = "Error: 504 Gateway Time-out"
+
+        d = node.to_dict()
+
+        assert d["result_preview"] == "Error: 504 Gateway Time-out"
+        assert d["error"] == "Error: 504 Gateway Time-out"
 
     def test_from_dict_with_old_format_migrates(self):
         """Backward compat: old YAML with inline description/result."""
