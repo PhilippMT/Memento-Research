@@ -89,10 +89,31 @@ class TestAutoresearchCredentialSafety:
         assert "YOUR" in data["server_url"] or "EXAMPLE" in data["server_url"].upper()
         assert "REPLACE" in data["session_key"].upper() or "EXAMPLE" in data["session_key"].upper()
 
-    def test_real_credentials_file_absent(self):
+    def test_real_credentials_file_not_tracked_by_git(self):
+        """The real credentials file may be dropped locally for runtime
+        smoke tests, but it must never be tracked by git. We assert the
+        gitignore + `git ls-files` state, not the filesystem state —
+        otherwise dev workflows that need a local credentials file would
+        falsely fail this test."""
+        import subprocess
+
         real = AUTORESEARCH / "autoresearch_credentials.json"
-        assert not real.exists(), (
-            "autoresearch_credentials.json must stay gitignored — real keys leaked into repo"
+        repo_root = Path(__file__).resolve().parents[3]
+        result = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--error-unmatch",
+                str(real.relative_to(repo_root)),
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        # ls-files --error-unmatch exits non-zero if the path is not tracked.
+        assert result.returncode != 0, (
+            "autoresearch_credentials.json is tracked by git — real keys "
+            "must never enter the repo. Remove with `git rm --cached`."
         )
 
     def test_gitignore_covers_real_credentials(self):
