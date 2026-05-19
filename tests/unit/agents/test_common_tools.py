@@ -730,12 +730,14 @@ class TestPublishAndChat:
         mock_bus = MagicMock(publish=AsyncMock())
         monkeypatch.setattr(ct_mod, "event_bus", mock_bus)
 
-        await ct_mod._chat("room-1", "Alice", "Engineer", "Hello")
+        await ct_mod._chat("room-1", "Alice", "Engineer", "Hello", speaker_id="00020")
         mock_bus.publish.assert_awaited_once()
         event = mock_bus.publish.call_args[0][0]
         assert event.type == "meeting_chat"
         assert event.payload["room_id"] == "room-1"
-        assert event.payload["speaker"] == "Alice"
+        assert event.payload["speaker"] == "Alice"  # legacy field retained
+        assert event.payload["speaker_name"] == "Alice"  # canonical
+        assert event.payload["speaker_id"] == "00020"
 
 
 # ---------------------------------------------------------------------------

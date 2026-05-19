@@ -41,17 +41,25 @@ def get_ceo_meeting_queue(room_id: str) -> asyncio.Queue | None:
     return _ceo_meeting_queues.get(room_id)
 
 
-async def _chat(room_id: str, speaker: str, role: str, message: str) -> None:
+async def _chat(
+    room_id: str,
+    speaker: str,
+    role: str,
+    message: str,
+    *,
+    speaker_id: str = "",
+) -> None:
     from datetime import datetime
     entry = {
         "room_id": room_id,
+        "speaker_id": speaker_id,
+        "speaker_name": speaker,
         "speaker": speaker,
         "role": role,
         "message": message,
         "time": datetime.now().strftime("%H:%M:%S"),
     }
     await _publish("meeting_chat", entry)
-    # Persist to disk so chat history survives page reload
     from onemancompany.core.store import append_room_chat
     await append_room_chat(room_id, entry)
 

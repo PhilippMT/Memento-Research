@@ -6216,6 +6216,8 @@ async def post_room_chat(room_id: str, body: dict):
 
     entry = {
         "room_id": room_id,
+        "speaker_id": CEO_ID,
+        "speaker_name": "CEO",
         "speaker": "CEO",
         "role": "CEO",
         "message": message,
