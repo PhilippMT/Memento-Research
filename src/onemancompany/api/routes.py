@@ -656,21 +656,33 @@ async def ceo_submit_task(
 
 @router.post("/api/task/{project_id}/followup")
 async def task_followup(project_id: str, body: dict) -> dict:
-    """CEO adds follow-up instructions to an existing task, dispatched to assignee (product owner or EA) with context."""
-    from datetime import datetime as _dt
+    """CEO adds follow-up instructions to an existing project.
+
+    Routing (no legacy EA-orchestrator fallback):
+
+    1. Active pipeline + phase == "gate"  → ``engine.on_ceo_approve(feedback=instructions)``
+       (advances the stage, or re-runs with revision keywords)
+    2. Active pipeline + phase != "gate"  → ``engine.queue_pending_feedback(instructions)``
+       (consumed on the next producer dispatch; pipeline state machine keeps owning the children)
+    3. No active pipeline + product owner → dispatch to the product owner with a context block
+    4. No active pipeline + no owner      → 400 (cannot dispatch — there is no orchestrator)
+    """
+    from pathlib import Path
 
     from onemancompany.core.agent_loop import get_agent_loop
-    from onemancompany.core.project_archive import get_project_dir, append_action
-    from onemancompany.core.task_tree import TaskTree, get_tree, save_tree_async
+    from onemancompany.core.pipeline_engine import get_or_load_pipeline
+    from onemancompany.core.project_archive import (
+        _resolve_and_load,
+        _save_resolved,
+        append_action,
+        get_project_dir,
+    )
+    from onemancompany.core.task_tree import TaskTree, get_tree
     from onemancompany.core.vessel import _save_project_tree
 
-    instructions = body.get("instructions", "").strip()
+    instructions = (body.get("instructions") or "").strip()
     if not instructions:
         return {"error": "Empty instructions"}
-
-    # Load project from filesystem (persistent, not in-memory)
-    from pathlib import Path
-    from onemancompany.core.project_archive import _resolve_and_load
 
     pdir = str(get_project_dir(project_id))
     if not pdir:
@@ -680,19 +692,84 @@ async def task_followup(project_id: str, body: dict) -> dict:
     if not doc:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    original_task = doc.get("task", "")
+    # ------------------------------------------------------------------
+    # 1 & 2. Active pipeline owns the orchestration — route there.
+    # ------------------------------------------------------------------
+    engine = get_or_load_pipeline(project_id, pdir)
+    if engine and engine.phase != "done":
+        append_action(project_id, "ceo", "follow-up instructions", instructions[:200])
+        if engine.phase == "gate":
+            logger.info(
+                "[FOLLOWUP] Pipeline gate open at stage {}, routing to on_ceo_approve",
+                engine.current_stage,
+            )
+            engine.on_ceo_approve(feedback=instructions)
+            await event_bus.publish(
+                CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
+            )
+            return {
+                "status": "ok",
+                "routed_to": "pipeline_gate",
+                "project_id": project_id,
+                "stage": engine.current_stage,
+                "phase": engine.phase,
+            }
+        logger.info(
+            "[FOLLOWUP] Pipeline mid-flight (stage {} phase {}), queuing CEO feedback",
+            engine.current_stage, engine.phase,
+        )
+        engine.queue_pending_feedback(instructions)
+        await event_bus.publish(
+            CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
+        )
+        return {
+            "status": "ok",
+            "routed_to": "pipeline_queue",
+            "project_id": project_id,
+            "stage": engine.current_stage,
+            "phase": engine.phase,
+            "message": "Pipeline is mid-flight; feedback will be applied on the next producer dispatch.",
+        }
 
-    # Load task tree and collect all previous work results
+    # ------------------------------------------------------------------
+    # 3. No pipeline — only product-owner dispatch is legal.
+    # ------------------------------------------------------------------
+    product_id = doc.get("product_id", "")
+    if not product_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No active pipeline and no linked product owner — there is no orchestrator "
+                "to receive this follow-up. Start a pipeline or link the project to a product."
+            ),
+        )
+
+    from onemancompany.core.product import find_slug_by_product_id, load_product
+    product_slug = find_slug_by_product_id(product_id)
+    if not product_slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Project is linked to product_id={product_id} but its slug cannot be resolved.",
+        )
+    product = load_product(product_slug)
+    owner_id = (product or {}).get("owner_id", "")
+    if not owner_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Product '{product_slug}' has no owner — cannot route follow-up.",
+        )
+
+    # Build the follow-up context for the product owner.
+    original_task = doc.get("task", "")
     tree_path = Path(pdir) / TASK_TREE_FILENAME
     work_summary_lines: list[str] = []
     if tree_path.exists():
-        tree = get_tree(tree_path, project_id=project_id)
+        existing_tree = get_tree(tree_path, project_id=project_id)
         from onemancompany.core.vessel import _collect_work_results, _list_deliverables
-        work_nodes = _collect_work_results(tree, pdir)
-        for wn in work_nodes:
+        for wn in _collect_work_results(existing_tree, pdir):
             title = wn.title or wn.description_preview[:80]
-            result = (wn.result or "").strip()
-            work_summary_lines.append(f"  [{wn.employee_id}] {title}: {result}")
+            result_text = (wn.result or "").strip()
+            work_summary_lines.append(f"  [{wn.employee_id}] {title}: {result_text}")
         deliverables = _list_deliverables(pdir)
         if deliverables:
             work_summary_lines.append("")
@@ -700,55 +777,28 @@ async def task_followup(project_id: str, body: dict) -> dict:
             for fname in deliverables:
                 work_summary_lines.append(f"  {fname}")
 
-    # Determine assignee: product owner if product-linked, else EA
-    assignee_id = EA_ID
-    product_id = doc.get("product_id", "")
-    if product_id:
-        from onemancompany.core.product import find_slug_by_product_id, load_product
-        product_slug = find_slug_by_product_id(product_id)
-        if product_slug:
-            product = load_product(product_slug)
-            if product and product.get("owner_id"):
-                assignee_id = product["owner_id"]
-                logger.debug("[FOLLOWUP] Product-linked project {}, routing to owner {}",
-                             project_id, assignee_id)
-        if assignee_id == EA_ID:
-            logger.debug("[FOLLOWUP] No product owner found for project {}, falling back to EA",
-                         project_id)
-
-    # Build follow-up task for assignee
     context_parts = [
-        f"CEO has added follow-up instructions to a completed task:\n",
+        "CEO has added follow-up instructions to a completed task:\n",
         f"Original task: {original_task}\n",
     ]
     if work_summary_lines:
-        context_parts.append(f"Previous work results:\n" + "\n".join(work_summary_lines) + "\n")
+        context_parts.append("Previous work results:\n" + "\n".join(work_summary_lines) + "\n")
     context_parts.append(f"CEO follow-up instructions: {instructions}\n")
     context_parts.append(
-        f"\nBuild on the existing work — do NOT redo completed subtasks unless the CEO explicitly asks."
-        f" Use dispatch_child() if subtasks are needed.\n\n"
+        "\nBuild on the existing work — do NOT redo completed subtasks unless the CEO explicitly asks."
+        " Use dispatch_child() if subtasks are needed.\n\n"
         f"[Project ID: {project_id}] [Project workspace: {pdir}]"
     )
     followup_task = "\n".join(context_parts)
 
-    # Append to existing tree (or create new if none exists)
-    tree_path = Path(pdir) / TASK_TREE_FILENAME
-    if tree_path.exists():
-        tree = get_tree(tree_path, project_id=project_id)
-    else:
-        tree = TaskTree(project_id=project_id)
+    tree = get_tree(tree_path, project_id=project_id) if tree_path.exists() else TaskTree(project_id=project_id)
 
-    assignee_loop = get_agent_loop(assignee_id)
-    if not assignee_loop:
-        raise HTTPException(status_code=503, detail=f"Agent {assignee_id} not available")
-
-    schedule_node_id = ""  # will be set to the assignee node to schedule
+    owner_loop = get_agent_loop(owner_id)
+    if not owner_loop:
+        raise HTTPException(status_code=503, detail=f"Agent {owner_id} not available")
 
     if tree.root_id:
-        # Add a new subtree from CEO root — old subtree stays intact
         root = tree.get_node(tree.root_id)
-
-        # Record the followup instruction as a CEO node under root
         followup_node = tree.add_child(
             parent_id=tree.root_id,
             employee_id=CEO_ID,
@@ -757,55 +807,47 @@ async def task_followup(project_id: str, body: dict) -> dict:
         )
         followup_node.node_type = NodeType.CEO_FOLLOWUP
         followup_node.status = TaskPhase.ACCEPTED.value
-
-        # Create execution node under the followup node
         exec_child = tree.add_child(
             parent_id=followup_node.id,
-            employee_id=assignee_id,
+            employee_id=owner_id,
             description=followup_task,
             acceptance_criteria=[],
         )
-        schedule_node_id = exec_child.id
-
-        # Keep CEO root in PROCESSING while new subtree runs
         if root and root.node_type == NodeType.CEO_PROMPT:
             root.status = TaskPhase.PROCESSING.value
     else:
-        # No root yet — create CEO root + assignee child
         ceo_root = tree.create_root(employee_id=CEO_ID, description=instructions)
         ceo_root.node_type = NodeType.CEO_PROMPT
         ceo_root.set_status(TaskPhase.PROCESSING)
         exec_child = tree.add_child(
             parent_id=ceo_root.id,
-            employee_id=assignee_id,
+            employee_id=owner_id,
             description=instructions,
             acceptance_criteria=[],
         )
-        schedule_node_id = exec_child.id
 
     _save_project_tree(pdir, tree)
 
-    # Schedule the assignee node for execution
-    if schedule_node_id:
-        tree_path = str(Path(pdir) / TASK_TREE_FILENAME)
-        from onemancompany.core.agent_loop import employee_manager
-        employee_manager.schedule_node(assignee_id, schedule_node_id, tree_path)
-        employee_manager._schedule_next(assignee_id)
+    tree_path_str = str(Path(pdir) / TASK_TREE_FILENAME)
+    from onemancompany.core.agent_loop import employee_manager
+    employee_manager.schedule_node(owner_id, exec_child.id, tree_path_str)
+    employee_manager._schedule_next(owner_id)
 
-    # Update project.yaml status back to in_progress
     doc["status"] = "in_progress"
     doc["completed_at"] = None
-    from onemancompany.core.project_archive import _save_resolved
     _save_resolved(_ver, _key, doc)
 
-    # Log the follow-up
     append_action(project_id, "ceo", "follow-up instructions", instructions[:200])
-
     await event_bus.publish(
         CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
     )
 
-    return {"status": "ok", "project_id": project_id}
+    return {
+        "status": "ok",
+        "routed_to": "product_owner",
+        "project_id": project_id,
+        "owner_id": owner_id,
+    }
 
 
 @router.post("/api/pipeline/resume")

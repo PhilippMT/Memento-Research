@@ -110,6 +110,55 @@ def test_dispatch_producer_with_feedback_uses_skill_lookup(tmp_path, monkeypatch
     assert emitted == [(("stage_start", 1), {"employee_name": "emp-topic", "employee_id": "emp-topic"})]
 
 
+def test_queue_pending_feedback_appends_and_persists(tmp_path):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.queue_pending_feedback("first hint")
+    engine.queue_pending_feedback("second hint")
+    assert "first hint" in engine.state["pending_user_feedback"]
+    assert "second hint" in engine.state["pending_user_feedback"]
+
+    # Reload from disk → still there
+    reloaded = pe._load_state(str(tmp_path))
+    assert "first hint" in reloaded["pending_user_feedback"]
+    assert "second hint" in reloaded["pending_user_feedback"]
+
+
+def test_dispatch_producer_consumes_pending_user_feedback(tmp_path, monkeypatch):
+    dispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.queue_pending_feedback("按意见整改")
+    engine._dispatch_producer(feedback="critic says shorten")
+
+    # Both critic feedback and queued CEO feedback land in the prompt.
+    desc = dispatched[0][1]
+    assert "shorten" in desc
+    assert "按意见整改" in desc
+    # Pending feedback is consumed after dispatch (single-use).
+    assert engine.state.get("pending_user_feedback", "") == ""
+
+
+def test_dispatch_producer_without_pending_feedback_unchanged(tmp_path, monkeypatch):
+    dispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine._dispatch_producer()
+
+    desc = dispatched[0][1]
+    assert "Direct guidance from CEO" not in desc
+    assert "pending_user_feedback" not in engine.state or engine.state.get("pending_user_feedback", "") == ""
+
+
 def test_dispatch_to_employee_uses_ea_child_as_parent_and_schedules(tmp_path, monkeypatch):
     scheduled = []
 

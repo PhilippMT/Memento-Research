@@ -229,6 +229,33 @@ class PipelineEngine:
         logger.info("[PIPELINE] Starting from stage {} to stage {}", self.state["current_stage"], self.state["end_stage"])
         self._dispatch_producer()
 
+    def queue_pending_feedback(self, text: str) -> None:
+        """Buffer CEO/user feedback to inject into the next producer dispatch.
+
+        Called when the CEO sends a chat message while the pipeline is mid-flight
+        (producer/critic running, or auto-retrying after a REJECT). The pipeline
+        is not at a gate, so we cannot call ``on_ceo_approve`` — but the user's
+        guidance is valuable for the next producer iteration. The buffered text
+        is consumed on the next ``_dispatch_producer`` call.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        pending = self.state.get("pending_user_feedback", "")
+        self.state["pending_user_feedback"] = (pending + "\n\n" + text) if pending else text
+        self._save()
+        logger.info(
+            "[PIPELINE] Queued CEO feedback (len={}) at stage {} phase {}",
+            len(text), self.current_stage, self.phase,
+        )
+
+    def _consume_pending_feedback(self) -> str:
+        text = self.state.get("pending_user_feedback", "")
+        if text:
+            self.state["pending_user_feedback"] = ""
+            self._save()
+        return text
+
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
         stage = self._stage_def()
@@ -249,6 +276,9 @@ class PipelineEngine:
         )
         if feedback:
             desc += f"\nFeedback from previous review:\n{feedback}\n"
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += f"\nDirect guidance from CEO (received during the previous attempt):\n{user_feedback}\n"
         # Stage 4 (Methodology Design) must run a multi-agent debate before
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
