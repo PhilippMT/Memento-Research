@@ -612,7 +612,7 @@ async function hydrateProjectFromBackend(pid) {
   completedIds.forEach(sid => {
     const meta = STAGES.find(s => s.id === sid);
     if (!meta) return;
-    const cardId = `s${sid}`;
+    const cardId = `stage${sid}`;  // match pipeline-controller._ensureCard
     getStageCard(cardId, `Stage ${sid} — ${meta.name}`, meta.name, meta.name.slice(0, 2).toUpperCase());
     // The new idea-construction prompt no longer prefixes Stage 3 markdown
     // with a `# Stage 3: — {topic}` heading, so the lcg renderer's topic
@@ -634,7 +634,7 @@ async function hydrateProjectFromBackend(pid) {
   });
 
   if (status.critic_result) {
-    updateCritic(`s${currentStage}`, status.critic_result);
+    updateCritic(`stage${currentStage}`, status.critic_result);
   }
 
   // Backfill the workspace panel. Live runs fill it via `file_written`
