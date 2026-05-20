@@ -946,8 +946,9 @@ async def revert_pipeline_to_stage(project_id: str, body: dict):
     stage's producer. Original branch and tags are preserved in git
     history; this is a fork, not a destructive rewrite.
 
-    Pipeline must be at a gate (or done) — reverting mid-stage would
-    clobber files an agent is writing.
+    Works at any phase: when a stage is mid-flight, the engine cancels
+    the in-flight producer/critic and scrubs any partial workspace
+    writes before forking. Callers don't need to wait for a gate.
     """
     from onemancompany.core.pipeline_engine import (
         get_or_load_pipeline, RevertNotAllowedError,
@@ -973,7 +974,7 @@ async def revert_pipeline_to_stage(project_id: str, body: dict):
         raise HTTPException(status_code=404, detail="No active pipeline for this project")
 
     try:
-        new_branch = engine.revert_to_stage(
+        new_branch = await engine.revert_to_stage(
             stage=stage, instructions=instructions, branch_name=branch_name,
         )
     except RevertNotAllowedError as exc:

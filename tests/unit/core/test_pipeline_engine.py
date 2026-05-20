@@ -701,14 +701,15 @@ def test_on_critic_pass_commits_and_tags_stage(tmp_path, monkeypatch):
     assert "Idea Generation" in stage_name  # STAGES[2].name
 
 
-def test_revert_to_stage_checkouts_branch_and_redispatches(tmp_path, monkeypatch):
-    """revert_to_stage(N, instructions) should:
-       1. Refuse if engine is mid-flight (only gate/done allowed).
-       2. Create a feature branch rooted at the previous stage's tag.
-       3. Reload state from disk (checkout flipped the file).
-       4. Set current_stage=N, phase=producer, retries=0.
-       5. Queue the user's instructions for stage N's producer.
-       6. Re-dispatch.
+@pytest.mark.asyncio
+async def test_revert_to_stage_checkouts_branch_and_redispatches(tmp_path, monkeypatch):
+    """revert_to_stage(N, instructions) at a gate should:
+       1. Create a feature branch rooted at the previous stage's tag.
+       2. Reload state from disk (checkout flipped the file).
+       3. Set current_stage=N, phase=producer, retries=0.
+       4. Queue the user's instructions for stage N's producer.
+       5. Re-dispatch.
+       6. NOT scrub the workspace (no active task, no partial writes).
     """
     checkout_calls = []
     redispatched = []
@@ -749,7 +750,7 @@ def test_revert_to_stage_checkouts_branch_and_redispatches(tmp_path, monkeypatch
     }
     engine._save()
 
-    branch = engine.revert_to_stage(stage=3, instructions="please use H2O instead")
+    branch = await engine.revert_to_stage(stage=3, instructions="please use H2O instead")
 
     assert checkout_calls, "checkout_branch_from_stage must be called"
     assert checkout_calls[0][2] == 3, "checkout target must be the stage being reverted to"
@@ -773,10 +774,13 @@ def test_revert_to_stage_checkouts_branch_and_redispatches(tmp_path, monkeypatch
     assert engine.state.get("pending_user_feedback", "") == ""
 
 
-def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(tmp_path, monkeypatch):
-    """When a later stage is mid-flight, revert cancels the active task,
-    discards uncommitted workspace changes from it, and proceeds with the
-    checkout — the user no longer has to wait for the next gate."""
+def _stub_revert_environment(monkeypatch, *, restored_state: dict, branch: str = "feat-revert-xx"):
+    """Common monkeypatches for the revert tests.
+
+    Returns a dict whose keys record observable side effects: ``aborted``,
+    ``waited`` (asyncio.Task handles whose .done() was awaited),
+    ``discarded`` (repo paths scrubbed), ``checkout_calls``.
+    """
     aborted: list[str] = []
     discarded: list[str] = []
     checkout_calls: list[tuple] = []
@@ -789,6 +793,7 @@ def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(tmp_pa
     from onemancompany.core import project_repo, agent_loop
 
     class _FakeManager:
+        _running_tasks: dict = {}
         def abort_employee(self, emp_id: str) -> int:
             aborted.append(emp_id)
             return 1
@@ -799,12 +804,22 @@ def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(tmp_pa
         checkout_calls.append((repo_dir, iteration, stage, branch_name))
         from pathlib import Path
         import yaml
-        (Path(repo_dir) / pe.STATE_FILENAME).write_text(yaml.safe_dump({
-            "topic": "t", "current_stage": 1, "phase": "gate",
-            "stage_results": {}, "retries": 0, "end_stage": 9,
-        }))
-        return branch_name or "feat-stage2-deadbe"
+        (Path(repo_dir) / pe.STATE_FILENAME).write_text(yaml.safe_dump(restored_state))
+        return branch_name or branch
     monkeypatch.setattr(project_repo, "checkout_branch_from_stage", fake_checkout)
+
+    return {"aborted": aborted, "discarded": discarded, "checkout_calls": checkout_calls}
+
+
+@pytest.mark.asyncio
+async def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(tmp_path, monkeypatch):
+    """When a later stage is mid-flight, revert cancels the active task,
+    discards uncommitted workspace changes from it, and proceeds with the
+    checkout — the user no longer has to wait for the next gate."""
+    sink = _stub_revert_environment(monkeypatch, restored_state={
+        "topic": "t", "current_stage": 1, "phase": "gate",
+        "stage_results": {}, "retries": 0, "end_stage": 9,
+    }, branch="feat-stage2-deadbe")
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 4
@@ -813,11 +828,11 @@ def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(tmp_pa
     engine.state["active_node_id"] = "node-abc"
     engine._save()
 
-    branch = engine.revert_to_stage(stage=2, instructions="redo with X")
+    branch = await engine.revert_to_stage(stage=2, instructions="redo with X")
 
-    assert aborted == ["emp-007"], "active employee's task must be cancelled before checkout"
-    assert discarded == [str(tmp_path)], "uncommitted workspace changes must be discarded before checkout"
-    assert checkout_calls, "checkout must run after cancel + discard"
+    assert sink["aborted"] == ["emp-007"], "active employee's task must be cancelled before checkout"
+    assert sink["discarded"] == [str(tmp_path)], "uncommitted workspace changes must be discarded mid-flight"
+    assert sink["checkout_calls"], "checkout must run after cancel + discard"
     assert branch == "feat-stage2-deadbe"
     assert engine.state["current_stage"] == 2
     assert engine.state["phase"] == "producer"
@@ -825,46 +840,52 @@ def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(tmp_pa
     assert engine.state["active_employee_id"] is None
 
 
-def test_revert_to_stage_skips_cancel_when_already_at_gate(tmp_path, monkeypatch):
-    """At a gate, there's no in-flight task to cancel — abort_employee
-    must not be called even if active_employee_id is stale."""
-    aborted: list[str] = []
-    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp")
-    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
-    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda *a, **k: None)
-    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+@pytest.mark.asyncio
+async def test_revert_to_stage_cancels_critic_phase_task(tmp_path, monkeypatch):
+    """phase=critic is also mid-flight — cancel path must run."""
+    sink = _stub_revert_environment(monkeypatch, restored_state={
+        "topic": "t", "current_stage": 1, "phase": "gate",
+        "stage_results": {}, "retries": 0, "end_stage": 9,
+    })
 
-    from onemancompany.core import project_repo, agent_loop
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "critic"
+    engine.state["active_employee_id"] = "critic-emp"
+    engine._save()
 
-    class _FakeManager:
-        def abort_employee(self, emp_id: str) -> int:
-            aborted.append(emp_id)
-            return 0
-    monkeypatch.setattr(agent_loop, "employee_manager", _FakeManager())
-    monkeypatch.setattr(project_repo, "discard_uncommitted_changes", lambda repo: None)
+    await engine.revert_to_stage(stage=2, instructions="x")
 
-    def fake_checkout(repo_dir, iteration, stage, branch_name=None):
-        from pathlib import Path
-        import yaml
-        (Path(repo_dir) / pe.STATE_FILENAME).write_text(yaml.safe_dump({
-            "topic": "t", "current_stage": 1, "phase": "gate",
-            "stage_results": {}, "retries": 0, "end_stage": 9,
-        }))
-        return branch_name or "feat-stage2-cafeba"
-    monkeypatch.setattr(project_repo, "checkout_branch_from_stage", fake_checkout)
+    assert sink["aborted"] == ["critic-emp"], "critic-phase revert must cancel the critic task"
+    assert sink["discarded"] == [str(tmp_path)], "critic-phase revert must scrub the workspace too"
+
+
+@pytest.mark.asyncio
+async def test_revert_at_gate_preserves_manual_workspace_edits(tmp_path, monkeypatch):
+    """At a gate, no task is running, so revert must NOT call
+    discard_uncommitted_changes — that would silently wipe any manual
+    edits the user made between gates. The downstream checkout's
+    DirtyWorkspaceError should be the loud signal instead."""
+    sink = _stub_revert_environment(monkeypatch, restored_state={
+        "topic": "t", "current_stage": 1, "phase": "gate",
+        "stage_results": {}, "retries": 0, "end_stage": 9,
+    })
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 5
     engine.state["phase"] = "gate"
-    engine.state["active_employee_id"] = "stale-id"
+    engine.state["active_employee_id"] = "stale-id"  # leftover, not actually running
     engine._save()
 
-    engine.revert_to_stage(stage=2, instructions="x")
+    await engine.revert_to_stage(stage=2, instructions="x")
 
-    assert aborted == [], "no cancel should happen when phase is gate"
+    assert sink["aborted"] == [], "no cancel at a gate"
+    assert sink["discarded"] == [], "no destructive workspace scrub at a gate"
+    assert sink["checkout_calls"], "checkout still runs"
 
 
-def test_revert_to_stage_validates_stage_bounds(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_revert_to_stage_validates_stage_bounds(tmp_path, monkeypatch):
     monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
@@ -874,12 +895,13 @@ def test_revert_to_stage_validates_stage_bounds(tmp_path, monkeypatch):
     engine._save()
 
     with pytest.raises(ValueError):
-        engine.revert_to_stage(stage=0, instructions="x")
+        await engine.revert_to_stage(stage=0, instructions="x")
     with pytest.raises(ValueError):
-        engine.revert_to_stage(stage=10, instructions="x")
+        await engine.revert_to_stage(stage=10, instructions="x")
 
 
-def test_revert_to_stage_refuses_when_no_employee_with_skill(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_revert_to_stage_refuses_when_no_employee_with_skill(tmp_path, monkeypatch):
     """Pre-flight check: if there's no agent that can run the producer
     for the target stage, refuse BEFORE touching git. Otherwise the
     user ends up on a new branch with corrupt state and no in-flight
@@ -901,12 +923,13 @@ def test_revert_to_stage_refuses_when_no_employee_with_skill(tmp_path, monkeypat
     engine._save()
 
     with pytest.raises(pe.RevertNotAllowedError):
-        engine.revert_to_stage(stage=3, instructions="redo with X")
+        await engine.revert_to_stage(stage=3, instructions="redo with X")
 
     assert not checkout_calls, "git checkout must not run when no agent can handle the stage"
 
 
-def test_revert_to_stage_raises_when_checkout_loses_state_file(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_revert_to_stage_raises_when_checkout_loses_state_file(tmp_path, monkeypatch):
     """Critical defence: if for any reason the snapshot we checked out
     has no ``pipeline_state.yaml``, ``_load_state`` returns ``{}``. The
     OLD code silently kept the abandoned branch's state — corrupting
@@ -934,7 +957,7 @@ def test_revert_to_stage_raises_when_checkout_loses_state_file(tmp_path, monkeyp
     engine._save()
 
     with pytest.raises(pe.RevertNotAllowedError, match="pipeline_state.yaml"):
-        engine.revert_to_stage(stage=3, instructions="x")
+        await engine.revert_to_stage(stage=3, instructions="x")
 
 
 @pytest.mark.parametrize("dirname,expected_prefix", [
@@ -966,7 +989,8 @@ def test_iteration_id_normalisation(tmp_path, dirname, expected_prefix):
 # ---------------------------------------------------------------------------
 
 
-def test_revert_real_git_restores_state_and_prunes_stage_results(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_revert_real_git_restores_state_and_prunes_stage_results(tmp_path, monkeypatch):
     """Smoke test: no mocks on ``project_repo``. Verifies that:
       1. ``ensure_initialized`` actually creates a git repo.
       2. ``commit_stage`` actually commits + tags after a passed stage.
@@ -1011,7 +1035,7 @@ def test_revert_real_git_restores_state_and_prunes_stage_results(tmp_path, monke
 
     # Now revert to stage 2. Expected: branch from iter_001/stage-1's
     # commit, so stage2.md disappears from the workspace.
-    branch = engine.revert_to_stage(stage=2, instructions="please rewrite stage 2 to use approach Y")
+    branch = await engine.revert_to_stage(stage=2, instructions="please rewrite stage 2 to use approach Y")
 
     assert branch.startswith("feat-stage2-"), branch
     assert (iter_dir / "stage1.md").exists(), "stage 1's output must survive the revert"

@@ -506,20 +506,30 @@ class PipelineEngine:
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)
 
-    def _cancel_active_task(self) -> None:
-        """Cancel the engine's active producer/critic task, if any.
+    async def _cancel_active_task_and_wait(self, *, timeout: float = 5.0) -> None:
+        """Cancel the engine's active producer/critic task and wait for it
+        to actually terminate.
 
-        Best-effort: a missing or already-terminal task is fine. We also
-        clear ``active_node_id`` / ``active_employee_id`` so the revert's
-        re-dispatch starts from a clean slate.
+        ``asyncio.Task.cancel()`` is non-blocking — it schedules cancellation;
+        the task only stops on its next ``await``. If we returned right after
+        calling cancel and proceeded to ``git reset --hard``, the cancelled
+        producer could still land a ``write()`` between our reset and the
+        checkout. We grab the task handle *before* calling
+        ``abort_employee`` (which pops it from ``_running_tasks``), then
+        ``await`` it with a timeout so the cancellation has actually
+        propagated through ``_run_task``'s finally block.
         """
         if self.phase in ("gate", "done", "failed"):
             return
         emp_id = self.state.get("active_employee_id")
         if not emp_id:
             return
+
+        from onemancompany.core.agent_loop import employee_manager
+
+        # Capture the task handle before abort_employee pops it.
+        running = employee_manager._running_tasks.get(emp_id)
         try:
-            from onemancompany.core.agent_loop import employee_manager
             cancelled = employee_manager.abort_employee(emp_id)
             logger.info(
                 "[PIPELINE] Cancelled {} active task(s) for employee {} before revert",
@@ -530,6 +540,30 @@ class PipelineEngine:
                 "[PIPELINE] abort_employee({}) failed during revert: {}",
                 emp_id, exc,
             )
+
+        # Wait for the producer's await chain to unwind. We swallow
+        # CancelledError (expected) and the task's own task-side
+        # exceptions (they're already logged by _run_task's finally
+        # block) — what matters here is that the task has finished, so
+        # no further file writes can land.
+        if running is not None and not running.done():
+            import asyncio
+            try:
+                await asyncio.wait_for(asyncio.shield(running), timeout=timeout)
+            except asyncio.CancelledError:
+                # Expected: that's what abort_employee() asked for. Task has
+                # finished unwinding, which is the post-condition we needed.
+                logger.debug("[PIPELINE] Cancelled task for {} terminated cleanly", emp_id)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[PIPELINE] Producer for {} did not stop within {}s; "
+                    "proceeding with revert anyway", emp_id, timeout,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[PIPELINE] Cancelled task raised {} during teardown (ignored)", exc,
+                )
+
         self.state["active_node_id"] = None
         self.state["active_employee_id"] = None
 
@@ -537,7 +571,7 @@ class PipelineEngine:
     # Public API — revert to a previous stage with new instructions
     # ------------------------------------------------------------------
 
-    def revert_to_stage(
+    async def revert_to_stage(
         self, *, stage: int, instructions: str, branch_name: str | None = None,
     ) -> str:
         """Create a feature branch rooted at stage ``stage - 1``'s tag,
@@ -582,15 +616,26 @@ class PipelineEngine:
                 f"'{stage_def['skill']}' is available to run the producer."
             )
 
-        # Cancel any in-flight producer/critic task before we touch git.
+        # Cancel any in-flight producer/critic task before we touch git
+        # and wait for it to actually stop (cancel() alone is non-blocking).
         # The cancelled task may have written partial output to the
         # workspace; ``discard_uncommitted_changes`` below scrubs that so
         # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
         # passes.
-        self._cancel_active_task()
+        was_mid_flight = self.phase in ("producer", "critic")
+        if was_mid_flight:
+            await self._cancel_active_task_and_wait()
 
         from onemancompany.core import project_repo
-        project_repo.discard_uncommitted_changes(self.project_dir)
+        # Only scrub the workspace when we just cancelled a task. At
+        # gate/done the workspace should already be clean (the previous
+        # stage's commit_stage left it that way), and an unconditional
+        # ``git reset --hard`` here would silently destroy any manual
+        # edits the user made between gates. Let
+        # ``checkout_branch_from_stage`` raise ``DirtyWorkspaceError``
+        # loudly in that case.
+        if was_mid_flight:
+            project_repo.discard_uncommitted_changes(self.project_dir)
         new_branch = project_repo.checkout_branch_from_stage(
             self.project_dir,
             iteration=self._iteration_id(),
