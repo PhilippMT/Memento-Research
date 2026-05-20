@@ -78,6 +78,7 @@ _EA_SKILL_NAMES = ["project-brainstorming"]
 # pattern; adding a new convener-style skill is one-line dict edit.
 _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
     "methodology_designer": ["methodology-debate-convener"],
+    "adversarial_review": ["methodology-quality-critic"],
 }
 
 

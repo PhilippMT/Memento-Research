@@ -509,3 +509,33 @@ class TestSkillConditionalRunbookInjection:
         # task_lifecycle still injected; no crash
         assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
         assert not (skills_dir / "methodology-debate-convener").exists()
+
+
+class TestAdversarialReviewerGetsQualityCritic:
+    """Whoever has adversarial_review must get the methodology-quality-critic
+    runbook auto-injected, so that the Stage 4 critic-side trigger resolves."""
+
+    def test_adversarial_review_employee_gets_quality_critic(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+
+        for skill_name in ("task_lifecycle", "methodology-quality-critic"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+
+        emp_dir = tmp_path / "00099"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- adversarial_review\n- peer_reviewer\nname: Critic\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00099")
+
+        assert (skills_dir / "methodology-quality-critic" / "SKILL.md").exists()
+
+    def test_skill_required_runbooks_includes_adversarial_review(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "adversarial_review" in _SKILL_REQUIRED_RUNBOOKS
+        assert "methodology-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]

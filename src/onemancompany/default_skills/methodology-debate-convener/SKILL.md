@@ -144,32 +144,80 @@ participant_ids = [spec1["employee_id"], spec2["employee_id"], ...]
 
 ---
 
-## Phase 3: Phrase the Topic
+## Phase 3: Write the Initial Methodology Draft (v1)
 
-The `topic` argument is the entire framing of the debate. Bad topic → empty
-debate. Good topic → sharp disagreement that forces real tradeoffs.
+**A debate needs a target.** Before convening, write a concrete first-draft
+methodology document. The debate will attack *this draft*, not "the topic in
+the abstract" — which keeps the discussion grounded and produces actionable
+critique.
+
+Cover all 8 CCF-A sections (see Phase 7 for the full criteria), but at draft
+quality — what you can produce in ~10 minutes of work. Do NOT polish yet;
+the debate will surface the gaps you can't see.
+
+Required sections in `stage4_methodology_v1_draft.md`:
+1. **Research Question** — restated precisely from Stage 1.
+2. **Hypotheses** — H1 primary; optional H2/H3 secondary.
+3. **Variables** — IV / DV / controls with measurement procedure.
+4. **Experimental Design** — chosen design (RCT / cluster / observational / simulation / ...) with one paragraph rationale.
+5. **Evaluation Metrics** — primary + secondary; statistical test named.
+6. **Threats to Validity** — internal / external / construct / statistical; mitigations.
+7. **Alternatives Considered** — write only "TBD — will populate from debate".
+8. **Open Questions** — questions you couldn't answer alone.
+
+Save with:
+
+```python
+write("stage4_methodology_v1_draft.md", draft_text)
+```
+
+This v1 draft is *internal* — it never goes to the critic. The critic only
+sees the post-debate revision (Phase 7 output).
+
+**Output language**: write the v1 draft (and every downstream artefact) in
+**English**, regardless of what language the upstream stages used. The
+target venue (CCF-A / ICML / NeurIPS) expects English-only methodology
+sections, and the quality critic's D9 dimension auto-REJECTs non-English
+output. If Stage 1-3 produced Chinese or other-language results, translate
+their substance into English while preserving precise terms.
+
+**Why draft first**: without a concrete artifact to attack, debates drift into
+"what methodology in general is best" abstractions. With a draft to attack,
+participants point at specific paragraphs and propose specific edits.
+
+---
+
+## Phase 4: Phrase the Critique Topic
+
+The `topic` argument is the entire framing of the debate. **The debate is a
+critique of the v1 draft**, not an abstract methodology discussion.
 
 **Bad topic** (too abstract):
 > "What methodology should we use?"
 
-**Good topic** (concrete, names the tradeoffs):
-> "For the research question '<paste stage 1>' and idea '<paste stage 3>',
-> should we adopt a randomised controlled trial, an observational study with
-> propensity-score matching, or an agent-based simulation? Consider: required
-> sample size, time-to-result, ecological validity, and threats to internal
-> validity."
+**Good topic** (concrete, paste the draft, demand critique):
+> "Below is our v1 draft methodology for the question '<paste stage 1>' and
+> idea '<paste stage 3>'. Read it and attack it. Specifically: (a) is the
+> chosen design (cluster RCT) actually appropriate given the spillover and
+> ICC concerns? (b) is the sample-size argument adequate? (c) are the
+> threats-to-validity mitigations actionable? (d) what alternatives did the
+> draft miss?
+>
+> --- v1 DRAFT ---
+> <paste full draft here>
+> --- END DRAFT ---
+>
+> Each participant: give one section the draft handles well and one section
+> that fails CCF-A standards, with a concrete fix."
 
 Always include in the topic:
-1. The exact research question (from Stage 1).
-2. The selected idea (from Stage 3, one sentence).
-3. **The specific methodological alternatives you want compared.** If you
-   don't name them, the debate will drift.
-4. **At least three evaluation axes** (validity, cost, time, ethics, sample
-   size, etc.) so participants have shared criteria.
+1. **The full v1 draft text** (the debate's target).
+2. **2-4 specific attack vectors** (don't let participants flail).
+3. **Per-section accountability** — ask each participant to name strengths AND failures with concrete fixes.
 
 ---
 
-## Phase 4: Run the Debate
+## Phase 5: Run the Debate
 
 ```python
 result = run_debate(
@@ -196,10 +244,11 @@ question is well-scoped; raise to 7 only if the first attempt ends in a tied
 
 ---
 
-## Phase 5: Save the Transcript
+## Phase 6: Save the Transcript
 
-Before writing the methodology, save the full transcript to the project
-workspace so retries (Phase 7) can reuse it:
+Before revising the methodology, save the full transcript to the project
+workspace so retries (Phase 8) can reuse it AND the quality critic can verify
+the debate happened:
 
 ```python
 import json
@@ -231,70 +280,148 @@ Transcript template:
 
 ---
 
-## Phase 6: Write the Methodology (Scribe Role)
+## Phase 7: Revise the v1 Draft into the Final Methodology (CCF-A)
 
-Now write `stage4_methodology_designer.md` synthesising the debate. The
-methodology document is your output for this stage — it is what Stage 5
-(Experiment Design) will read.
+You have a v1 draft (Phase 3) and a transcript (Phase 6). Now produce the
+**final** `stage4_methodology_designer.md`. The bar is **CCF-A / ICML /
+NeurIPS reviewer grade** — not "structurally complete" but "would pass peer
+review at a top venue". The critic (`methodology-quality-critic` skill)
+scores against the same criteria you should write to.
 
-### Required sections
+### The 8 required sections — CCF-A criteria per section
 
-1. **Research Question** — one sentence, restated precisely from Stage 1.
-2. **Hypotheses** — primary + secondary, each falsifiable.
-3. **Variables** — independent, dependent, controls; with operational
-   definitions for each.
-4. **Experimental Design** — the chosen design (RCT, quasi-experimental,
-   observational, simulation, etc.) with **one paragraph citing the
-   strongest arguments from the debate** for why this design was selected.
-5. **Evaluation Metrics** — primary + secondary, each with a measurement
-   procedure.
-6. **Threats to Validity** — internal, external, construct, statistical
-   conclusion. At least one mitigation per threat.
-7. **Alternatives Considered** — methodologies the debate discussed but did
-   NOT select, with a one-line reason each. (This honours minority views.)
-8. **Open Questions** — anything the debate left unresolved that the
-   experimentalist or analyst will need to handle.
+Each section below has **must-haves** (✅) and **disqualifiers** (❌). If a
+section has any disqualifier, the critic will REJECT.
+
+#### 1. Research Question (≤ 1 paragraph)
+- ✅ One precise, falsifiable question stated in a single sentence.
+- ✅ Scope bounded (population, setting, time horizon).
+- ❌ Vague verbs ("study", "explore") without operationalisation.
+- ❌ Multiple unrelated questions smuggled in.
+
+#### 2. Hypotheses + Variables
+- ✅ H1 primary hypothesis explicitly stated, falsifiable, directional.
+- ✅ Optional H2/H3 secondary, each independently testable.
+- ✅ IV/DV/control variables with **operational measurement**
+  (e.g. "cycle time = `merged_at` − `created_at` from GitHub API, median per team").
+- ✅ Notation table if you use mathematical symbols (X, Y, T, …).
+- ❌ "Performance" or "quality" without a measurement procedure.
+
+#### 3. Experimental Design (largest section — bulk of CCF-A scrutiny)
+- ✅ Chosen design named precisely (cluster RCT, observational + PSM, etc.).
+- ✅ **One full paragraph minimum** explaining *why this design over each alternative debated* — cite the strongest argument from the transcript verbatim or by paraphrase, naming the participant.
+- ✅ Randomisation procedure / unit of analysis spelled out.
+- ✅ **Sample size with power analysis** — α, β, MDE, ICC where applicable. Naked "n=100" without math is a fail.
+- ✅ Pre-registration commitment: what locks before data collection.
+- ❌ "We will design an experiment" — not a design.
+- ❌ Sample size assertion without showing the math.
+
+#### 4. Evaluation Metrics
+- ✅ **Singular** primary metric (one number that decides PASS/FAIL of H1).
+- ✅ Secondary / diagnostic metrics enumerated and labelled secondary.
+- ✅ Per-metric measurement procedure (raw data → metric formula).
+- ✅ Statistical test named (t-test, mixed-effects, Wilcoxon, …) with multiple-comparisons correction if applicable.
+- ❌ Composite "AUC" / "F1" without specifying class balance, threshold, aggregation.
+- ❌ Vibes metrics ("user happiness") without operationalisation.
+
+#### 5. Threats to Validity (must be **deep**, not enumerated)
+Address all four with **(a) specific mechanism** + **(b) actionable mitigation**:
+- ✅ Internal — selection, attrition, history, instrumentation, maturation.
+- ✅ External — population, setting, treatment, outcome generalisability.
+- ✅ Construct — does the metric measure the construct.
+- ✅ Statistical conclusion — power, Type-I/II rate, assumption violations.
+- ❌ Word-bullets ("selection bias, Hawthorne effect, …") without engagement.
+- ❌ "We will mitigate by being careful" or non-actionable mitigations.
+
+#### 6. Alternatives Considered
+- ✅ At least 2 alternatives the debate discussed but did *not* select.
+- ✅ For each, the strongest argument from the transcript explaining rejection.
+- ❌ Strawman alternatives that make the chosen design look good.
+- ❌ Missing this section entirely.
+
+#### 7. Reproducibility
+- ✅ Compute budget disclosed (CPU/GPU hours, $).
+- ✅ Data: source, licence, preprocessing steps, link or pointer.
+- ✅ Code: planned release statement, environment.
+- ✅ Random seeds / determinism statement.
+- ❌ Missing this section.
+
+#### 8. Citation of the Debate
+This is unique to AutoResearch — the critic will literally search the
+methodology for transcript citations.
+- ✅ At least 2 places where a methodology decision quotes/paraphrases a named participant.
+- ❌ Decisions appear without grounding in transcript — signals you wrote in a vacuum.
+
+### Writing-style rules (D9 will check these — bake them in here)
+
+- **English only.** Even if Stage 1-3 produced Chinese results, the
+  methodology document is English. Translate substance, preserve precise
+  technical terms.
+- **Academic register.** Formal voice. No colloquialisms ("stuff",
+  "kinda", "a bunch of"). `we` is acceptable for methodological intent
+  ("we adopt a cluster RCT") but not narrative ("we kept trying things").
+- **Terminology lock.** Pick one term per concept early and use it
+  everywhere. If you pick `treatment / control`, never drift to
+  `intervention / baseline` later.
+- **Notation discipline.** Define every mathematical symbol on first use.
+  Use LaTeX-friendly inline math: `$\alpha = 0.05$`, `$X_i \sim \mathcal{N}(\mu, \sigma^2)$`,
+  not `alpha = 0.05` or `X_i ~ N(mu, sigma^2)`.
+- **Topic sentence per paragraph.** Each paragraph in Experimental Design
+  and Threats to Validity opens with a one-sentence claim, followed by
+  2-4 supporting sentences. Bullet lists are fine for enumerations
+  (Variables list, alternative-options list) but the Experimental Design
+  prose must be paragraphs.
+- **Tense consistency.** Debate already happened → past tense. Experiment
+  not yet run → `we will` or present-tense statement of intent. Don't
+  mix paragraph-to-paragraph.
 
 ### Synthesis rules
 
-- **The transcript is your source of truth**, not your prior knowledge. If
-  your gut says "use X" but nobody in the debate argued for X, do not pick X.
-  Add X to **Open Questions** if you think it's important.
+- **Start from the v1 draft, do not rewrite from scratch.** Edit it in place
+  so the structure carries forward.
+- **The transcript is your source of truth for the changes.** If your gut
+  says "use X" but nobody argued for X, do not pick X. Add X to **Open
+  Questions** if important.
 - **Weight late rounds more than early rounds.** Participants refine their
-  positions as they see each other's arguments. Round 5 is sharper than
-  Round 1.
-- **Cite the debate.** When you select an option, name the strongest argument
-  from the transcript that supports it, e.g.:
-  > "We adopt a small RCT because <name in transcript> demonstrated that
-  > observational designs cannot rule out the confound of <X> given our
-  > <Y> setup."
-- **Don't suppress minority views.** If two participants disagreed and the
-  judge picked one, put the loser in **Alternatives Considered** with their
-  strongest argument — not a strawman.
+  positions; round N is sharper than round 1.
+- **Cite the debate explicitly.** When you select an option, name the
+  participant + strongest argument, e.g.:
+  > "We adopt a cluster RCT because **狂刀** demonstrated that PR-level
+  > randomisation cannot eliminate within-team spillover when the same
+  > engineer reviews across both arms (round 1)."
+- **Don't suppress minority views.** Losing arguments belong in
+  **Alternatives Considered** with their strongest formulation, not a
+  strawman.
+
+### Output
+
+Save to `stage4_methodology_designer.md`. The critic will compare this
+against `stage4_debate_transcript.md` looking for D8 (citation) signals,
+so the transcript file MUST exist by this point.
 
 ---
 
-## Phase 7: Submit and Handle Retries
+## Phase 8: Submit and Handle Retries
 
 ```python
-submit_result(summary="Methodology designed via 5-participant debate; RCT chosen with observational fallback. See stage4_methodology_designer.md.")
+submit_result(summary="Methodology v2: cluster RCT chosen over PR-level RCT and observational PSM. See stage4_methodology_designer.md. Transcript: stage4_debate_transcript.md. 4 participants, 1 round, unanimous consensus.")
 ```
 
-If the adversarial critic rejects your methodology:
+If the adversarial critic rejects your methodology, the rejection will name
+specific D1-D8 dimensions that failed:
 
-1. **Do NOT re-run the debate.** The transcript is already in
-   `stage4_debate_transcript.md` — re-read it.
-2. **Read the critic feedback carefully.** Identify which methodology
-   element it objects to (design? metrics? validity threats?).
-3. **Patch the methodology.** Strengthen the weak section using arguments
-   from the existing transcript. If the transcript truly cannot answer the
-   critic's objection, add it to **Open Questions** and call it out
-   explicitly in your `submit_result()` summary.
-4. Re-submit.
+1. **Do NOT re-run the debate.** Transcript still in `stage4_debate_transcript.md`.
+2. **Identify the failing dimension(s)** from critic output.
+3. **Patch only the failing section(s)** using arguments from the existing
+   transcript. If the transcript genuinely cannot answer the critic's
+   objection on, say, sample-size power analysis, fill the gap with your own
+   work — but be honest in **Open Questions** about what you derived rather
+   than cited.
+4. Re-submit with a summary that flags which D-dimensions you addressed.
 
-After 3 critic rejections, the pipeline holds for CEO review — at that point
-the CEO may decide a fresh debate is warranted. That's a CEO decision, not
-yours.
+After 3 critic rejections, the pipeline holds for CEO review. The CEO may
+decide a fresh debate is warranted with different participants. That's a
+CEO decision, not yours.
 
 ---
 

@@ -444,6 +444,11 @@ def test_dispatch_producer_stage4_injects_methodology_debate_skill_trigger(tmp_p
     assert 'load_skill("methodology-debate-convener")' in desc, (
         "Stage 4 task description must instruct the producer to load the convener skill"
     )
+    # Preamble must describe the draft → debate → revise flow, not the
+    # pre-#19 "synthesise transcript into methodology document" wording.
+    assert "draft" in desc.lower() and "revise" in desc.lower(), (
+        "Stage 4 trigger preamble must mention the draft → debate → revise flow"
+    )
 
 
 def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, monkeypatch):
@@ -466,6 +471,45 @@ def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, mon
     desc = dispatched[0][1]
     assert "methodology-debate-convener" not in desc, (
         "Non-Stage-4 stages must not carry the debate convener trigger"
+    )
+
+
+def test_dispatch_critic_stage4_injects_methodology_quality_critic_skill(tmp_path, monkeypatch):
+    """Stage 4 critic dispatch must instruct the reviewer to load the
+    methodology-quality-critic skill, which enforces CCF-A grade criteria.
+    Other stages' critic dispatches must not get this directive."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine._dispatch_critic("draft methodology document")
+
+    assert dispatched, "critic must be dispatched"
+    desc = dispatched[0][1]
+    assert 'load_skill("methodology-quality-critic")' in desc, (
+        "Stage 4 critic description must instruct the reviewer to load the quality-critic skill"
+    )
+
+
+def test_dispatch_critic_non_stage4_does_not_inject_quality_critic(tmp_path, monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5  # Experiment Design
+    engine._dispatch_critic("experiment plan output")
+
+    assert dispatched, "critic must be dispatched"
+    desc = dispatched[0][1]
+    assert "methodology-quality-critic" not in desc, (
+        "Non-Stage-4 critic dispatch must not carry the methodology critic skill trigger"
     )
 
 
