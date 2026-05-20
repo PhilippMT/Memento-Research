@@ -189,6 +189,33 @@ def test_checkout_branch_from_stage_explicit_branch_name(tmp_path):
     assert _git(tmp_path, "branch", "--show-current") == "my-redo"
 
 
+def test_discard_uncommitted_changes_drops_tracked_and_untracked(tmp_path):
+    """Used by revert-mid-flight: cancelled producer's partial writes must
+    be scrubbed before checkout, otherwise DirtyWorkspaceError fires."""
+    pr.ensure_initialized(str(tmp_path), iteration="iter001")
+    iter_dir = tmp_path / "iterations" / "iter_001"
+    iter_dir.mkdir(parents=True)
+    (iter_dir / "stage1.md").write_text("committed\n")
+    pr.commit_stage(str(tmp_path), iteration="iter001", stage=1, stage_name="Stage 1")
+
+    # Simulate a cancelled producer mid-write: modify a tracked file and
+    # also leave an untracked scratch file behind.
+    (iter_dir / "stage1.md").write_text("partial dirty\n")
+    (iter_dir / "scratch.tmp").write_text("garbage\n")
+    assert pr._has_uncommitted_changes(str(tmp_path))
+
+    pr.discard_uncommitted_changes(str(tmp_path))
+
+    assert not pr._has_uncommitted_changes(str(tmp_path))
+    assert (iter_dir / "stage1.md").read_text() == "committed\n"
+    assert not (iter_dir / "scratch.tmp").exists()
+
+
+def test_discard_uncommitted_changes_noop_on_uninitialized_repo(tmp_path):
+    """Defensive: called on a non-repo directory should not raise."""
+    pr.discard_uncommitted_changes(str(tmp_path))  # no .git/ — should silently no-op
+
+
 def test_checkout_branch_from_stage_refuses_dirty_worktree(tmp_path):
     """If the user's workspace has uncommitted changes (which would be a
     bug — the engine should only revert at idle moments), refuse rather

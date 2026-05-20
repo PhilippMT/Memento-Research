@@ -506,6 +506,33 @@ class PipelineEngine:
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)
 
+    def _cancel_active_task(self) -> None:
+        """Cancel the engine's active producer/critic task, if any.
+
+        Best-effort: a missing or already-terminal task is fine. We also
+        clear ``active_node_id`` / ``active_employee_id`` so the revert's
+        re-dispatch starts from a clean slate.
+        """
+        if self.phase in ("gate", "done", "failed"):
+            return
+        emp_id = self.state.get("active_employee_id")
+        if not emp_id:
+            return
+        try:
+            from onemancompany.core.agent_loop import employee_manager
+            cancelled = employee_manager.abort_employee(emp_id)
+            logger.info(
+                "[PIPELINE] Cancelled {} active task(s) for employee {} before revert",
+                cancelled, emp_id,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "[PIPELINE] abort_employee({}) failed during revert: {}",
+                emp_id, exc,
+            )
+        self.state["active_node_id"] = None
+        self.state["active_employee_id"] = None
+
     # ------------------------------------------------------------------
     # Public API — revert to a previous stage with new instructions
     # ------------------------------------------------------------------
@@ -520,21 +547,17 @@ class PipelineEngine:
         Returns the (possibly auto-generated) branch name so callers can
         surface it to the user.
 
-        Raises ``RevertNotAllowedError`` if the engine is mid-flight
-        (phase != gate / done). Raises ``ValueError`` for out-of-range
-        stage numbers.
+        Raises ``ValueError`` for out-of-range stage numbers.
+
+        Behaviour when a later stage is mid-flight (phase ∈ {producer,
+        critic}): the active task is cancelled and any uncommitted
+        workspace changes from that cancelled task are discarded before
+        the checkout. Callers don't need to wait for a gate — the engine
+        handles the cleanup so reverts work at any point in the pipeline.
 
         The semantics deliberately keep the *current branch's* tags and
         commits intact — reverting forks; it does not destroy history.
-        Returning to the original branch (in a future PR) is a separate
-        checkout op.
         """
-        if self.phase not in ("gate", "done"):
-            raise RevertNotAllowedError(
-                f"Cannot revert while pipeline phase is '{self.phase}'. "
-                "Wait until the current stage reaches a gate."
-            )
-
         end = self.state.get("end_stage", 9)
         if not (1 <= stage <= end):
             raise ValueError(
@@ -543,12 +566,12 @@ class PipelineEngine:
 
         instructions = (instructions or "").strip()
 
-        # Validate dispatchability BEFORE touching git. The whole revert
-        # operation should be either fully successful or fully a no-op;
-        # otherwise we leave the user on a new branch with corrupt state
-        # and no in-flight task. ``stage_assignments`` honours user
-        # overrides; otherwise the engine resolves by skill from
-        # ``employee_configs``.
+        # Validate dispatchability BEFORE touching git or cancelling
+        # tasks. The whole revert operation should be either fully
+        # successful or fully a no-op; otherwise we leave the user on a
+        # new branch with corrupt state and no in-flight task.
+        # ``stage_assignments`` honours user overrides; otherwise the
+        # engine resolves by skill from ``employee_configs``.
         stage_def = STAGES[stage - 1]
         assignments = self.state.get("stage_assignments", {})
         assigned = assignments.get(str(stage_def["id"]))
@@ -559,7 +582,15 @@ class PipelineEngine:
                 f"'{stage_def['skill']}' is available to run the producer."
             )
 
+        # Cancel any in-flight producer/critic task before we touch git.
+        # The cancelled task may have written partial output to the
+        # workspace; ``discard_uncommitted_changes`` below scrubs that so
+        # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
+        # passes.
+        self._cancel_active_task()
+
         from onemancompany.core import project_repo
+        project_repo.discard_uncommitted_changes(self.project_dir)
         new_branch = project_repo.checkout_branch_from_stage(
             self.project_dir,
             iteration=self._iteration_id(),

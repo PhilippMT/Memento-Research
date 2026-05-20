@@ -773,18 +773,95 @@ def test_revert_to_stage_checkouts_branch_and_redispatches(tmp_path, monkeypatch
     assert engine.state.get("pending_user_feedback", "") == ""
 
 
-def test_revert_to_stage_refuses_when_engine_mid_flight(tmp_path, monkeypatch):
-    """Cannot revert while a producer or critic is running — workspace is
-    in-flight, git checkout would clobber files mid-write."""
+def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(tmp_path, monkeypatch):
+    """When a later stage is mid-flight, revert cancels the active task,
+    discards uncommitted workspace changes from it, and proceeds with the
+    checkout — the user no longer has to wait for the next gate."""
+    aborted: list[str] = []
+    discarded: list[str] = []
+    checkout_calls: list[tuple] = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda *a, **k: None)
     monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+
+    from onemancompany.core import project_repo, agent_loop
+
+    class _FakeManager:
+        def abort_employee(self, emp_id: str) -> int:
+            aborted.append(emp_id)
+            return 1
+    monkeypatch.setattr(agent_loop, "employee_manager", _FakeManager())
+    monkeypatch.setattr(project_repo, "discard_uncommitted_changes", lambda repo: discarded.append(repo))
+
+    def fake_checkout(repo_dir, iteration, stage, branch_name=None):
+        checkout_calls.append((repo_dir, iteration, stage, branch_name))
+        from pathlib import Path
+        import yaml
+        (Path(repo_dir) / pe.STATE_FILENAME).write_text(yaml.safe_dump({
+            "topic": "t", "current_stage": 1, "phase": "gate",
+            "stage_results": {}, "retries": 0, "end_stage": 9,
+        }))
+        return branch_name or "feat-stage2-deadbe"
+    monkeypatch.setattr(project_repo, "checkout_branch_from_stage", fake_checkout)
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 4
     engine.state["phase"] = "producer"  # mid-flight
+    engine.state["active_employee_id"] = "emp-007"
+    engine.state["active_node_id"] = "node-abc"
     engine._save()
 
-    with pytest.raises(pe.RevertNotAllowedError):
-        engine.revert_to_stage(stage=2, instructions="redo with X")
+    branch = engine.revert_to_stage(stage=2, instructions="redo with X")
+
+    assert aborted == ["emp-007"], "active employee's task must be cancelled before checkout"
+    assert discarded == [str(tmp_path)], "uncommitted workspace changes must be discarded before checkout"
+    assert checkout_calls, "checkout must run after cancel + discard"
+    assert branch == "feat-stage2-deadbe"
+    assert engine.state["current_stage"] == 2
+    assert engine.state["phase"] == "producer"
+    assert engine.state["active_node_id"] is None
+    assert engine.state["active_employee_id"] is None
+
+
+def test_revert_to_stage_skips_cancel_when_already_at_gate(tmp_path, monkeypatch):
+    """At a gate, there's no in-flight task to cancel — abort_employee
+    must not be called even if active_employee_id is stale."""
+    aborted: list[str] = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+
+    from onemancompany.core import project_repo, agent_loop
+
+    class _FakeManager:
+        def abort_employee(self, emp_id: str) -> int:
+            aborted.append(emp_id)
+            return 0
+    monkeypatch.setattr(agent_loop, "employee_manager", _FakeManager())
+    monkeypatch.setattr(project_repo, "discard_uncommitted_changes", lambda repo: None)
+
+    def fake_checkout(repo_dir, iteration, stage, branch_name=None):
+        from pathlib import Path
+        import yaml
+        (Path(repo_dir) / pe.STATE_FILENAME).write_text(yaml.safe_dump({
+            "topic": "t", "current_stage": 1, "phase": "gate",
+            "stage_results": {}, "retries": 0, "end_stage": 9,
+        }))
+        return branch_name or "feat-stage2-cafeba"
+    monkeypatch.setattr(project_repo, "checkout_branch_from_stage", fake_checkout)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5
+    engine.state["phase"] = "gate"
+    engine.state["active_employee_id"] = "stale-id"
+    engine._save()
+
+    engine.revert_to_stage(stage=2, instructions="x")
+
+    assert aborted == [], "no cancel should happen when phase is gate"
 
 
 def test_revert_to_stage_validates_stage_bounds(tmp_path, monkeypatch):

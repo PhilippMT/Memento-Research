@@ -115,6 +115,21 @@ def _has_uncommitted_changes(repo_dir: str) -> bool:
     return bool(result.stdout.strip())
 
 
+def discard_uncommitted_changes(repo_dir: str) -> None:
+    """Reset the workspace to HEAD, dropping all tracked modifications and
+    untracked files.
+
+    Used by ``PipelineEngine.revert_to_stage`` when the user reverts while a
+    later stage is still running: the cancelled producer may have already
+    written partial output to the workspace, which would otherwise trip
+    ``checkout_branch_from_stage``'s ``DirtyWorkspaceError`` guard.
+    """
+    if not _is_initialized(repo_dir):
+        return
+    _run(repo_dir, "reset", "--hard", "--quiet")
+    _run(repo_dir, "clean", "-fdq")
+
+
 def _tag_exists(repo_dir: str, tag: str) -> bool:
     result = _run(repo_dir, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}", check=False)
     return result.returncode == 0
