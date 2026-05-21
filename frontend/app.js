@@ -106,8 +106,9 @@ class AppController {
         });
       }
       // Show version
-      if (version) {
-        document.getElementById('app-version').textContent = `v${version}`;
+      const versionEl = document.getElementById('app-version');
+      if (version && versionEl) {
+        versionEl.textContent = `v${version}`;
       }
       // Store onboarding timestamp for announcements filtering
       if (data.onboarding_timestamp) {

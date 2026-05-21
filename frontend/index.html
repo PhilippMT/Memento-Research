@@ -37,6 +37,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .brand-icon{width:34px;height:34px;background:var(--green);border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(36,90,64,.2)}
 .brand-icon svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2}
 .brand-name{font-family:var(--serif);font-size:1.15rem;font-weight:600;letter-spacing:-.02em}
+.app-version{font-family:var(--mono);font-size:.62rem;font-weight:600;color:var(--text4);letter-spacing:.02em;align-self:flex-end;margin-bottom:3px}
+.app-version:empty{display:none}
 .lab-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--pill);background:var(--gold-subtle);border:1px solid var(--gold);font-family:var(--mono);font-size:.65rem;font-weight:600;color:var(--text3);letter-spacing:.05em;text-transform:uppercase}
 
 /* New project button */
@@ -419,6 +421,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
       <div class="brand">
         <div class="brand-icon"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
         <span class="brand-name">AutoResearch</span>
+        <span class="app-version" id="app-version" title="Project version"></span>
       </div>
       <div class="conn-status" id="connStatus"><span class="conn-dot"></span><span class="conn-label">Offline</span></div>
     </div>
