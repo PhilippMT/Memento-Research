@@ -381,6 +381,23 @@ class PipelineEngine:
                 "fabricate or simulate results — if a remote submit is "
                 "required but credentials are missing, report the failure.\n"
             )
+        # Stage 7 (Result Analysis) reads the Stage 4 methodology, the
+        # Stage 5 experiment plan + assignments, and the Stage 6
+        # experimentalist report, then produces a confirmatory analysis
+        # that obeys the pre-registered tests and labels every claim as
+        # confirmatory or exploratory. HARKing is auto-REJECTED.
+        elif stage["id"] == 7:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("result-analysis-runbook") '
+                "and follow it. The runbook tells you how to reconstruct the "
+                "pre-registration contract from Stage 4/5, map Stage 6 evidence "
+                "onto each hypothesis, run only the pre-registered statistical "
+                "tests with effect sizes + 95% CIs, run the manipulation and "
+                "falsification checks, and cap the overall verdict at whatever "
+                "coverage Stage 6 actually delivered. Do not invent new tests, "
+                "do not substitute metrics, do not HARK.\n"
+            )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
             f"Write your output to a file named stage{stage['id']}_{stage['skill']}.md "
@@ -460,6 +477,22 @@ class PipelineEngine:
                 "successes, failures, and total cost?\n"
                 "Reject when the report claims success without a verifiable "
                 "run_id.\n\n"
+            )
+        # Stage 7 critic enforces the pre-registration contract: every
+        # confirmatory claim in Stage 7 must trace back to a Stage 4/5
+        # pre-registered test and a real Stage 6 run_id. HARKing is an
+        # explicit auto-REJECT trigger.
+        elif stage["id"] == 7:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("result-quality-critic") and follow that '
+                "runbook to grade Stage 7 against the immutable Stage 4/5 "
+                "pre-registration contract and the actual Stage 6 evidence. "
+                "Three auto-REJECT triggers: (a) any test in Stage 7 "
+                "confirmatory section not present verbatim in Stage 4/5 "
+                "(HARKing); (b) any confirmatory claim without a real "
+                "Stage 6 run_id (fabrication); (c) non-English document.\n\n"
             )
         desc += f"--- Producer Output ---\n{producer_result}\n"
 

@@ -1287,3 +1287,115 @@ async def test_revert_real_git_restores_state_and_prunes_stage_results(tmp_path,
     assert engine.state["current_stage"] == 2
     assert engine.state["phase"] == "producer"
     assert engine.state["retries"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 (Result Analysis) — pre-registration contract + critic gating
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_producer_stage7_injects_result_analysis_runbook_trigger(tmp_path, monkeypatch):
+    """Stage 7 producer task description must instruct the agent to load
+    the result-analysis-runbook skill so the analyst obeys the
+    pre-registration contract (no HARKing)."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: f"emp-{skill}" if skill else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine._dispatch_producer()
+
+    assert dispatched, "Stage 7 producer must dispatch"
+    desc = dispatched[0][1]
+    assert 'load_skill("result-analysis-runbook")' in desc, (
+        "Stage 7 task description must instruct the producer to load the "
+        "result-analysis-runbook skill"
+    )
+    assert "pre-registration" in desc.lower() or "pre-registered" in desc.lower(), (
+        "Stage 7 task description must reference the pre-registration "
+        "contract from Stage 4/5"
+    )
+    assert "HARK" in desc, (
+        "Stage 7 task description must call out the no-HARKing rule so "
+        "the producer treats it as a hard contract"
+    )
+
+
+def test_dispatch_critic_stage7_injects_result_quality_critic(tmp_path, monkeypatch):
+    """Stage 7 critic dispatch must instruct the reviewer to load the
+    result-quality-critic runbook so HARKing is auto-REJECTED."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine._dispatch_critic("Stage 7 producer report")
+
+    assert dispatched, "Stage 7 critic must be dispatched"
+    desc = dispatched[0][1]
+    assert 'load_skill("result-quality-critic")' in desc, (
+        "Stage 7 critic prompt must instruct the reviewer to load the "
+        "result-quality-critic runbook"
+    )
+    assert "HARK" in desc, (
+        "Stage 7 critic prompt must explicitly call out HARKing as the "
+        "primary failure mode"
+    )
+    assert "auto-REJECT" in desc, (
+        "Stage 7 critic prompt must mention the auto-REJECT triggers "
+        "(HARKing / fabrication / non-English)"
+    )
+
+
+def test_dispatch_producer_stage7_not_in_other_stages(tmp_path, monkeypatch):
+    """The Stage 7 trigger must be stage-scoped — Stages 1/4/5/6 producers
+    must not carry the result-analysis-runbook trigger."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: f"emp-{skill}" if skill else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    for stage_id in (1, 4, 5, 6):
+        dispatched.clear()
+        engine = pe.PipelineEngine(f"p{stage_id}", str(tmp_path), "topic")
+        engine.state["current_stage"] = stage_id
+        engine._dispatch_producer()
+        if dispatched:
+            assert "result-analysis-runbook" not in dispatched[0][1], (
+                f"Stage {stage_id} producer must not carry the Stage 7 "
+                f"result-analysis-runbook trigger"
+            )
+
+
+def test_dispatch_critic_stage7_not_in_other_stages(tmp_path, monkeypatch):
+    """The Stage 7 critic trigger must be stage-scoped — Stages 4/5/6
+    critics must not carry the result-quality-critic trigger."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    for stage_id in (4, 5, 6):
+        dispatched.clear()
+        engine = pe.PipelineEngine(f"p{stage_id}", str(tmp_path), "topic")
+        engine.state["current_stage"] = stage_id
+        engine._dispatch_critic(f"Stage {stage_id} producer report")
+        if dispatched:
+            assert "result-quality-critic" not in dispatched[0][1], (
+                f"Stage {stage_id} critic must not carry the Stage 7 "
+                f"result-quality-critic trigger"
+            )
