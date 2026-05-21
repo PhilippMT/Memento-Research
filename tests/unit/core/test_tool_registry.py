@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -490,6 +491,38 @@ class TestExecuteToolEmployeeIdAutoFill:
 
         # employee_id should have been filled by execute_tool
         assert mock_tool.ainvoke.call_args[0][0]["employee_id"] == "00004"
+
+    @pytest.mark.asyncio
+    async def test_same_tool_calls_are_serialized_to_avoid_fixed_tmp_races(self, tmp_path):
+        """Concurrent calls to one tool must not race on fixed tmp+rename files."""
+        from onemancompany.core.tool_registry import execute_tool, tool_registry
+
+        target = tmp_path / "index.json"
+
+        class FixedTmpTool:
+            name = "fixed_tmp_tool"
+
+            async def ainvoke(self, args):
+                path = Path(args["target"])
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text('{"status": "ok"}')
+                await asyncio.sleep(0.01)
+                tmp.replace(path)
+                return {"status": "ok"}
+
+        mock_run_hooks = AsyncMock(return_value=[])
+        with patch.object(tool_registry, "get_tool", return_value=FixedTmpTool()), \
+             patch("onemancompany.core.skill_hooks.run_hooks", mock_run_hooks), \
+             patch("onemancompany.core.skill_hooks.should_block", return_value=(False, "")), \
+             patch("onemancompany.core.skill_hooks.get_updated_input", side_effect=lambda _results, args: args):
+            first, second = await asyncio.gather(
+                execute_tool("", "fixed_tmp_tool", {"target": str(target)}),
+                execute_tool("", "fixed_tmp_tool", {"target": str(target)}),
+            )
+
+        assert first == {"status": "ok"}
+        assert second == {"status": "ok"}
+        assert target.read_text() == '{"status": "ok"}'
 
     @pytest.mark.asyncio
     async def test_does_not_overwrite_explicit_employee_id(self):

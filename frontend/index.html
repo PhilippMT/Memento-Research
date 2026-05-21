@@ -206,6 +206,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .sc-badge.badge-error{background:var(--coral-subtle);color:var(--coral)}
 .sc-badge.badge-reviewing{background:var(--gold-subtle);color:#8B7332;animation:pulse-badge 1.5s ease-in-out infinite}
 @keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.6}}
+.sc-revert-btn{padding:4px 10px;border-radius:var(--pill);border:1px solid var(--border);background:var(--white);color:var(--text2);font-size:.7rem;font-weight:500;cursor:pointer;margin-right:6px;transition:all .15s}
+.sc-revert-btn:hover{background:var(--green-subtle);color:var(--green);border-color:var(--green)}
 
 /* Content sections inside card */
 .sc-body{padding:0}
@@ -379,6 +381,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .ws-file-icon.ft-py{background:#EDE8F5;color:#6B4FA0}
 .ws-file-icon.ft-json{background:var(--gold-subtle);color:#8B7332}
 .ws-file-icon.ft-txt{background:var(--bg);color:var(--text3)}
+.ws-file-icon.ft-pdf{background:var(--coral-subtle);color:var(--coral)}
+.ws-file-icon.ft-tex{background:#E8F0FA;color:#3B6FA0}
 .ws-file-icon.ft-other{background:var(--bg);color:var(--text4)}
 .ws-file-info{flex:1;min-width:0}
 .ws-file-name{font-size:.82rem;font-weight:550;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -636,6 +640,15 @@ function switchProject(pid) {
   if (hero && proj.stagesHtml) hero.style.display = 'none';
   else if (hero && !proj.stagesHtml) hero.style.display = '';
 
+  // Hydrate from backend when the in-memory state is empty (post-refresh, or any
+  // project beyond the one auto-restored by restoreLastSession). Without this
+  // fetch, clicking a project after a hard refresh leaves the meetings area
+  // and workspace blank because all in-memory project state was wiped.
+  const hasInMemoryState = (proj.stagesHtml && proj.stagesHtml.length > 0)
+    || (proj.wsFiles && proj.wsFiles.size > 0);
+  if (!hasInMemoryState && typeof window.restoreProjectView === 'function') {
+    window.restoreProjectView(pid);
+  }
 
   // Replay any buffered events that arrived while this project was in the background
   if (typeof replayBufferedEvents === 'function') replayBufferedEvents(pid);
@@ -918,6 +931,8 @@ function _fileIcon(name) {
   if (ext === 'py') return ['PY', 'ft-py'];
   if (ext === 'json' || ext === 'yaml' || ext === 'yml') return ['{}', 'ft-json'];
   if (ext === 'txt' || ext === 'csv') return ['TXT', 'ft-txt'];
+  if (ext === 'pdf') return ['PDF', 'ft-pdf'];
+  if (ext === 'tex') return ['TEX', 'ft-tex'];
   return [ext.toUpperCase().slice(0, 3) || 'F', 'ft-other'];
 }
 
@@ -1021,8 +1036,20 @@ function _renderMd(src) {
 
 function _previewFile(name, info) {
   document.getElementById('wsPreview')?.remove();
-  const content = info.content || '';
   const ext = name.split('.').pop().toLowerCase();
+
+  // Binary formats (PDF) — open in a new tab via the project files
+  // endpoint instead of showing garbage in the raw text view.
+  if (ext === 'pdf') {
+    const pid = (window._currentProjectId || '').split('/')[0];
+    const path = info.path || info.file_path || name;
+    if (pid && path) {
+      window.open(`/api/projects/${encodeURIComponent(pid)}/files/${path.split('/').map(encodeURIComponent).join('/')}`, '_blank');
+    }
+    return;
+  }
+
+  const content = info.content || '';
   const isMd = (ext === 'md');
 
   const overlay = document.createElement('div');
@@ -1156,6 +1183,7 @@ function getStageCard(id, title, agentName, agentInitials) {
     <div class="sc-head">
       <div class="sc-icon">${agentInitials}</div>
       <div class="sc-title">${title}<small>${agentName}</small></div>
+      <button class="sc-revert-btn" type="button" data-card="${id}" style="display:none" title="Fork from this stage with new instructions">↺ 回到这里</button>
       <span class="sc-badge badge-running">Running</span>
     </div>
     <div class="sc-body">
@@ -1221,26 +1249,139 @@ function setCardStatus(cardId, status) {
   const badge = card.querySelector('.sc-badge');
   if (!badge) return;
   const wrapper = document.getElementById('sw-' + cardId);
+  const revertBtn = card.querySelector('.sc-revert-btn');
   card.classList.remove('sc-active', 'sc-error', 'sc-done');
   if (wrapper) wrapper.classList.remove('sw-active', 'sw-done', 'sw-error');
   if (status === 'done') {
     badge.className = 'sc-badge badge-done'; badge.textContent = 'Passed';
     card.classList.add('sc-done');
     if (wrapper) wrapper.classList.add('sw-done');
+    // Reveal the revert button: a completed stage is the only safe
+    // checkpoint to fork from.
+    if (revertBtn) revertBtn.style.display = '';
   } else if (status === 'error' || status === 'rejected') {
     badge.className = 'sc-badge badge-error'; badge.textContent = 'Rejected';
     card.classList.add('sc-error');
     if (wrapper) wrapper.classList.add('sw-error');
+    if (revertBtn) revertBtn.style.display = 'none';
   } else if (status === 'reviewing') {
     badge.className = 'sc-badge badge-reviewing'; badge.textContent = 'Reviewing';
     card.classList.add('sc-active');
     if (wrapper) wrapper.classList.add('sw-active');
+    if (revertBtn) revertBtn.style.display = 'none';
   } else {
     badge.className = 'sc-badge badge-running'; badge.textContent = 'Running';
     card.classList.add('sc-active');
     if (wrapper) wrapper.classList.add('sw-active');
+    if (revertBtn) revertBtn.style.display = 'none';
   }
 }
+
+// Open a dialog asking the user for instructions, then POST to
+// /api/pipeline/{pid}/revert. On success the engine forks a new branch
+// rooted at the previous stage's commit, restores the workspace to that
+// snapshot, queues the instructions for the producer, and emits stage
+// events that the existing WebSocket adapter will paint over the
+// current view.
+function openRevertDialog(cardId) {
+  // cardId is "stage<N>"; pull the integer back out.
+  const m = /^stage(\d+)$/.exec(cardId);
+  if (!m) { window.postNotice?.('Cannot resolve stage from card ID', 'error'); return; }
+  const stageNum = parseInt(m[1], 10);
+  // Capture pid + active-project at modal-open, NOT at submit. If the
+  // user switches projects via the sidebar while the modal is open, the
+  // revert must still hit the project they originally clicked on.
+  const pid = (window._currentProjectId || '').split('/')[0];
+  const sessionAtOpen = window._activeProjectId || pid;
+  if (!pid) { window.postNotice?.('No active project', 'error'); return; }
+
+  document.getElementById('revertDialog')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'revertDialog';
+  overlay.className = 'ws-preview';
+  overlay.innerHTML = `
+    <div class="ws-preview-head">
+      <div class="ws-preview-title">回到 Stage ${stageNum} 重做</div>
+      <div class="ws-preview-actions">
+        <button class="ws-preview-btn btn-close" id="revertCloseBtn">✕</button>
+      </div>
+    </div>
+    <div class="ws-preview-body view-raw" style="padding:16px">
+      <p style="margin:0 0 12px;color:var(--text3);font-size:.875rem">
+        Pipeline 会从 Stage ${stageNum - 1 || '0 (baseline)'} 的快照创建一个新的 git 分支，
+        把工作区回到那个状态，然后用下面的指示重跑 Stage ${stageNum} 及之后所有阶段。
+        原分支的提交保留在 git history 里。
+      </p>
+      <textarea id="revertInstructionsTa" placeholder="给负责 Stage ${stageNum} 的 agent 的新指示……"
+        style="width:100%;min-height:140px;padding:10px;border:1px solid var(--border);border-radius:var(--r-md);font-family:inherit;font-size:.9rem;resize:vertical"></textarea>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="ws-preview-btn" id="revertCancelBtn">取消</button>
+        <button class="ws-preview-btn" id="revertSubmitBtn" style="background:var(--green);color:white">回到这里并重跑</button>
+      </div>
+      <div id="revertError" style="margin-top:8px;color:var(--coral);font-size:.85rem;display:none"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const ta = document.getElementById('revertInstructionsTa');
+  ta.focus();
+  const close = () => overlay.remove();
+  document.getElementById('revertCloseBtn').onclick = close;
+  document.getElementById('revertCancelBtn').onclick = close;
+  document.getElementById('revertSubmitBtn').onclick = async () => {
+    const instructions = ta.value.trim();
+    if (!instructions) {
+      document.getElementById('revertError').style.display = '';
+      document.getElementById('revertError').textContent = '请填写指示内容';
+      return;
+    }
+    document.getElementById('revertSubmitBtn').disabled = true;
+    document.getElementById('revertSubmitBtn').textContent = '处理中…';
+    try {
+      const res = await fetch(`/api/pipeline/${encodeURIComponent(pid)}/revert`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({stage: stageNum, instructions}),
+      });
+      if (!res.ok) {
+        const detail = (await res.json().catch(() => ({}))).detail || res.statusText;
+        document.getElementById('revertError').style.display = '';
+        document.getElementById('revertError').textContent = `失败: ${detail}`;
+        document.getElementById('revertSubmitBtn').disabled = false;
+        document.getElementById('revertSubmitBtn').textContent = '回到这里并重跑';
+        return;
+      }
+      const data = await res.json();
+      window.postNotice?.(
+        `已 fork 到分支 <strong>${data.branch}</strong>，正在重跑 Stage ${stageNum}。`,
+        'ok',
+      );
+      // The engine emits stage events as it re-dispatches; the existing
+      // event adapter will repaint the cards. Re-fetch status so the
+      // sidebar / pipeline bar catch up immediately too. Use the session
+      // ID captured at modal-open so a mid-modal project switch doesn't
+      // mis-route the refresh.
+      if (typeof window.restoreProjectView === 'function') {
+        window.restoreProjectView(sessionAtOpen);
+      }
+      close();
+    } catch (err) {
+      document.getElementById('revertError').style.display = '';
+      document.getElementById('revertError').textContent = `网络错误: ${err.message || err}`;
+      document.getElementById('revertSubmitBtn').disabled = false;
+      document.getElementById('revertSubmitBtn').textContent = '回到这里并重跑';
+    }
+  };
+}
+
+// Delegated handler: stage cards are created dynamically, so we attach
+// a single click listener on document and dispatch on .sc-revert-btn.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.sc-revert-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  openRevertDialog(btn.dataset.card);
+});
+window.openRevertDialog = openRevertDialog;
 
 // Add confidence bar to a stage card
 function addCardConf(cardId, pct) {

@@ -2550,26 +2550,50 @@ class EmployeeManager:
         # --- Pipeline engine check ---
         # If this task is managed by the pipeline engine, route to it
         # instead of normal gate/review logic. The engine handles everything.
-        if node.status in (TaskPhase.COMPLETED.value, TaskPhase.ACCEPTED.value, TaskPhase.FINISHED.value):
+        #
+        # Fires for ALL terminal statuses — success (COMPLETED/ACCEPTED/
+        # FINISHED), failure (FAILED), and cancellation (CANCELLED). Before
+        # this fix, only the success statuses routed to the engine; FAILED
+        # fell through to the legacy "EA-anchor completion" check below,
+        # which mistook Stage 1's producer for an EA orchestrator and
+        # declared the entire project complete the moment any later stage
+        # failed. The pipeline engine now owns FAILED and CANCELLED.
+        _PIPELINE_TERMINAL_STATUSES = (
+            TaskPhase.COMPLETED.value,
+            TaskPhase.ACCEPTED.value,
+            TaskPhase.FINISHED.value,
+            TaskPhase.FAILED.value,
+            TaskPhase.CANCELLED.value,
+        )
+        _node_meta = getattr(node, 'metadata', None) or {}
+        if _node_meta.get("pipeline_managed") and node.status in _PIPELINE_TERMINAL_STATUSES:
             from onemancompany.core.pipeline_engine import get_or_load_pipeline
-            _node_meta = getattr(node, 'metadata', None) or {}
-            if _node_meta.get("pipeline_managed"):
-                _pdir = node.project_dir or str(Path(entry.tree_path).parent)
-                engine = get_or_load_pipeline(project_id, _pdir)
-                if engine:
-                    result = node.result or ""
-                    logger.info(
-                        "[PIPELINE] Task complete: employee={} node={} → routing to pipeline engine (stage={}, phase={})",
-                        employee_id, entry.node_id, engine.current_stage, engine.phase,
-                    )
-                    # Auto-accept the node so the tree stays clean
-                    if node.status == TaskPhase.COMPLETED.value:
-                        node.set_status(TaskPhase.ACCEPTED)
-                        node.acceptance_result = {"passed": True, "notes": "auto-accepted (pipeline engine)"}
-                        node.set_status(TaskPhase.FINISHED)
-                        save_tree_async(entry.tree_path)
+            _pdir = node.project_dir or str(Path(entry.tree_path).parent)
+            engine = get_or_load_pipeline(project_id, _pdir)
+            if engine:
+                result = node.result or ""
+                _terminal_kind = (
+                    "failed" if task_failed
+                    else "cancelled" if node.status == TaskPhase.CANCELLED.value
+                    else "complete"
+                )
+                logger.info(
+                    "[PIPELINE] Task {}: employee={} node={} → routing to pipeline engine (stage={}, phase={})",
+                    _terminal_kind,
+                    employee_id, entry.node_id, engine.current_stage, engine.phase,
+                )
+                # Auto-accept the node on success so the tree stays clean.
+                # FAILED/CANCELLED nodes keep their status; engine re-dispatches or holds.
+                if node.status == TaskPhase.COMPLETED.value:
+                    node.set_status(TaskPhase.ACCEPTED)
+                    node.acceptance_result = {"passed": True, "notes": "auto-accepted (pipeline engine)"}
+                    node.set_status(TaskPhase.FINISHED)
+                    save_tree_async(entry.tree_path)
+                if task_failed or node.status == TaskPhase.CANCELLED.value:
+                    engine.on_task_failed(employee_id, entry.node_id, result)
+                else:
                     engine.on_task_complete(employee_id, entry.node_id, result)
-                    return  # Pipeline engine handles everything from here
+                return  # Pipeline engine handles everything from here
 
         # --- Propagate upward: review / auto-complete parent ---
         # CEO prompt nodes are containers — they don't need review or auto-complete.
@@ -2863,7 +2887,17 @@ class EmployeeManager:
         # After any status change, check if the entire project tree is resolved.
         # EA done executing + all child subtrees RESOLVED → trigger CEO confirmation.
         # Skip non-project node types (see _SKIP_COMPLETION_TYPES).
-        if node.node_type not in SKIP_COMPLETION_TYPES and tree.is_project_complete():
+        #
+        # Pipeline-managed trees are explicitly excluded: ``PipelineEngine``
+        # owns completion via ``_emit_pipeline_complete``. The legacy EA-anchor
+        # heuristic in ``is_project_complete`` would otherwise mistake Stage 1's
+        # producer for an EA orchestrator and declare the project complete the
+        # moment Stage 1 finishes — even with later stages still queued.
+        if (
+            node.node_type not in SKIP_COMPLETION_TYPES
+            and not tree.has_pipeline_managed_nodes()
+            and tree.is_project_complete()
+        ):
             # Find the EA node relevant to this completion:
             # For followup tasks, use the followup's EA child (not the original EA).
             ea_node = tree.get_ea_node()  # default: first EA
@@ -3181,6 +3215,13 @@ class EmployeeManager:
 
                     dep_node.set_status(TaskPhase.BLOCKED)
                     logger.debug("[TASK LIFECYCLE] node={} → BLOCKED (dep {} failed)", dep_node.id, completed_node.id)
+                    # Populate result so the frontend's error display has a
+                    # concrete reason instead of "unknown error". Mirrors the
+                    # cascade-cancelled path above.
+                    dep_node.result = (
+                        f"Blocked: dependency "
+                        f"\"{completed_node.description_preview[:80]}\" failed."
+                    )
                     dirty = True
                     # Notify parent about blocked task
                     parent = tree.get_node(dep_node.parent_id)

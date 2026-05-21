@@ -128,14 +128,28 @@ async def _publish(event_type: EventType, payload: dict) -> None:
     await event_bus.publish(CompanyEvent(type=event_type, payload=payload, agent=_AGENT_ROUTINE))
 
 
-async def _chat(room_id: str, speaker: str, role: str, message: str) -> None:
-    """Publish a meeting_chat event and persist to disk."""
+async def _chat(
+    room_id: str,
+    speaker: str,
+    role: str,
+    message: str,
+    *,
+    speaker_id: str = "",
+) -> None:
+    """Publish a meeting_chat event and persist to disk.
+
+    The payload populates the canonical speaker_id/speaker_name fields
+    (per MeetingChatPayload) so the frontend event adapter can resolve
+    the speaker without falling back to "Speaker undefined". The legacy
+    ``speaker`` key is kept until the follow-up PR removes it.
+    """
     from datetime import datetime
-    # LLM resp.content can be list/dict — ensure plain string for frontend
     if not isinstance(message, str):
         message = str(message)
     entry = {
         "room_id": room_id,
+        "speaker_id": speaker_id,
+        "speaker_name": speaker,
         "speaker": speaker,
         "role": role,
         "message": message,
@@ -261,7 +275,7 @@ async def _handle_self_evaluation(step: WorkflowStep, ctx: StepContext) -> dict:
     workflow_ctx = _format_workflow_context(step)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": step.title, "message": "Employee self-evaluation started"})
-    await _chat(ctx.room_id, "HR", "HR", f"{step.title} has begun. Please proceed with self-evaluations in turn.")
+    await _chat(ctx.room_id, "HR", "HR", f"{step.title} has begun. Please proceed with self-evaluations in turn.", speaker_id=HR_ID)
 
     # Format project timeline for context
     timeline_ctx = ""
@@ -327,7 +341,7 @@ async def _handle_self_evaluation(step: WorkflowStep, ctx: StepContext) -> dict:
             CTX_KEY_EVALUATION: eval_text,
         })
         display = emp_nickname or emp_name
-        await _chat(ctx.room_id, display, emp_role, eval_text)
+        await _chat(ctx.room_id, display, emp_role, eval_text, speaker_id=emp_id)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": step.title, "message": "Employee self-evaluation completed"})
     return {"self_evaluations": ctx.self_evaluations}
@@ -403,7 +417,7 @@ async def _handle_senior_review(step: WorkflowStep, ctx: StepContext) -> dict:
         review_summary = "; ".join(
             f"{r.get('name','')}: {r.get('review','')[:60]}" for r in reviews
         )
-        await _chat(ctx.room_id, display, senior_data.get(PF_ROLE, ""), f"[Peer Review] {review_summary}")
+        await _chat(ctx.room_id, display, senior_data.get(PF_ROLE, ""), f"[Peer Review] {review_summary}", speaker_id=senior_id)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": step.title, "message": "Peer review completed"})
     return {"senior_reviews": ctx.senior_reviews}
@@ -465,7 +479,7 @@ async def _handle_hr_summary(step: WorkflowStep, ctx: StepContext) -> dict:
         f"{it.get('employee','')}: {', '.join(it.get('improvements',[]))[:60]}"
         for it in improvements
     )
-    await _chat(ctx.room_id, "HR", "HR", f"[Summary] {hr_msg}")
+    await _chat(ctx.room_id, "HR", "HR", f"[Summary] {hr_msg}", speaker_id=HR_ID)
 
     await _publish(EventType.ROUTINE_PHASE, {
         "phase": step.title,
@@ -530,7 +544,7 @@ async def _handle_coo_report(step: WorkflowStep, ctx: StepContext) -> dict:
     )
     resp = await tracked_ainvoke(llm, coo_prompt, category="routine", employee_id=COO_ID)
     ctx.coo_report = resp.content
-    await _chat(ctx.room_id, "COO", "COO", ctx.coo_report)
+    await _chat(ctx.room_id, "COO", "COO", ctx.coo_report, speaker_id=COO_ID)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": step.title, "message": "COO report completed"})
     return {"coo_report": ctx.coo_report}
@@ -542,14 +556,14 @@ async def _handle_asset_consolidation(step: WorkflowStep, ctx: StepContext) -> d
 
     project_id = ctx.project_record.get("id", "") or ctx.project_record.get("project_id", "")
     if not project_id:
-        await _chat(ctx.room_id, "COO", "COO", "[Asset Consolidation] No project ID, skipping asset consolidation.")
+        await _chat(ctx.room_id, "COO", "COO", "[Asset Consolidation] No project ID, skipping asset consolidation.", speaker_id=COO_ID)
         return {"asset_suggestions": []}
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": step.title, "message": "COO is reviewing project deliverables"})
 
     files = list_project_files(project_id)
     if not files:
-        await _chat(ctx.room_id, "COO", "COO", "[Asset Consolidation] No files in project workspace, skipping.")
+        await _chat(ctx.room_id, "COO", "COO", "[Asset Consolidation] No files in project workspace, skipping.", speaker_id=COO_ID)
         return {"asset_suggestions": []}
 
     project_dir = get_project_dir(project_id)
@@ -582,9 +596,9 @@ async def _handle_asset_consolidation(step: WorkflowStep, ctx: StepContext) -> d
 
     if suggestions:
         names = ", ".join(s.get("name", "?") for s in suggestions)
-        await _chat(ctx.room_id, "COO", "COO", f"[Asset Consolidation Suggestions] {names}")
+        await _chat(ctx.room_id, "COO", "COO", f"[Asset Consolidation Suggestions] {names}", speaker_id=COO_ID)
     else:
-        await _chat(ctx.room_id, "COO", "COO", "[Asset Consolidation] No assets to preserve from this project.")
+        await _chat(ctx.room_id, "COO", "COO", "[Asset Consolidation] No assets to preserve from this project.", speaker_id=COO_ID)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": step.title, "message": "Asset consolidation review completed"})
     return {"asset_suggestions": suggestions}
@@ -658,7 +672,7 @@ async def _handle_employee_open_floor(step: WorkflowStep, ctx: StepContext) -> d
             "feedback": feedback_content,
         })
         display = emp_nickname or emp_name
-        await _chat(ctx.room_id, display, emp_role, feedback_content)
+        await _chat(ctx.room_id, display, emp_role, feedback_content, speaker_id=emp_id)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": step.title, "message": "Open floor concluded"})
     return {"employee_feedback": ctx.employee_feedback}
@@ -736,7 +750,7 @@ async def _handle_ea_approval(step: WorkflowStep, ctx: StepContext) -> dict:
             "phase": step.title,
             "message": "No action items pending approval, skipping EA approval"
         })
-        await _chat(ctx.room_id, "EA", "EA", "No action items requiring approval in this meeting.")
+        await _chat(ctx.room_id, "EA", "EA", "No action items requiring approval in this meeting.", speaker_id=EA_ID)
         return {"status": "no_actions", "approved": [], "rejected": [], "skipped_duplicates": []}
 
     # Dedup: filter out items already proposed in past meetings
@@ -745,7 +759,8 @@ async def _handle_ea_approval(step: WorkflowStep, ctx: StepContext) -> dict:
     if dup_items:
         dup_descs = "; ".join(d.get("description", "")[:40] for d in dup_items)
         await _chat(ctx.room_id, "EA", "EA",
-                    f"[Dedup] Skipping {len(dup_items)} previously proposed improvements: {dup_descs}")
+                    f"[Dedup] Skipping {len(dup_items)} previously proposed improvements: {dup_descs}",
+                    speaker_id=EA_ID)
         await _publish(EventType.ROUTINE_PHASE, {
             "phase": step.title,
             "message": f"Dedup skipped {len(dup_items)} duplicate improvements"
@@ -755,14 +770,15 @@ async def _handle_ea_approval(step: WorkflowStep, ctx: StepContext) -> dict:
     if recurring_items:
         recurring_descs = "\n".join(f"  - {r.get('description', '')[:80]}" for r in recurring_items)
         await _chat(ctx.room_id, "EA", "EA",
-                    f"[Warning] The following {len(recurring_items)} improvements have been proposed multiple times without resolution, requiring CEO attention:\n{recurring_descs}")
+                    f"[Warning] The following {len(recurring_items)} improvements have been proposed multiple times without resolution, requiring CEO attention:\n{recurring_descs}",
+                    speaker_id=EA_ID)
         await _publish(EventType.RECURRING_ACTION_ITEMS, {
             "items": [r.get("description", "") for r in recurring_items],
             "message": f"{len(recurring_items)} improvements keep recurring and may not be resolvable through normal means; CEO decision needed",
         })
 
     if not unique_items:
-        await _chat(ctx.room_id, "EA", "EA", "All improvement items have been proposed in previous meetings; no new action plans.")
+        await _chat(ctx.room_id, "EA", "EA", "All improvement items have been proposed in previous meetings; no new action plans.", speaker_id=EA_ID)
         return {
             "status": "all_duplicates",
             "approved": [],
@@ -839,7 +855,8 @@ async def _handle_ea_approval(step: WorkflowStep, ctx: StepContext) -> dict:
 
     # Chat announcement
     await _chat(ctx.room_id, "EA", "EA",
-                f"[Approval Result] Approved {len(approved)} items, rejected {len(rejected)} items. {ea_reason}")
+                f"[Approval Result] Approved {len(approved)} items, rejected {len(rejected)} items. {ea_reason}",
+                speaker_id=EA_ID)
 
     if not approved:
         await _publish(EventType.ROUTINE_PHASE, {
@@ -891,7 +908,8 @@ async def _handle_ea_approval(step: WorkflowStep, ctx: StepContext) -> dict:
         if coo_loop:
             coo_loop.push_task(coo_task)
             await _chat(ctx.room_id, "EA", "EA",
-                        f"Pushed {len(remaining_actions)} approved actions to COO task board")
+                        f"Pushed {len(remaining_actions)} approved actions to COO task board",
+                        speaker_id=EA_ID)
 
     await _publish(EventType.ROUTINE_PHASE, {
         "phase": step.title,
@@ -1377,19 +1395,21 @@ async def _ea_auto_approve_actions(
     if dup_items:
         dup_descs = "; ".join(d.get("description", "")[:40] for d in dup_items)
         await _chat(room_id, "EA", "EA",
-                    f"[Dedup] Skipping {len(dup_items)} previously proposed improvements: {dup_descs}")
+                    f"[Dedup] Skipping {len(dup_items)} previously proposed improvements: {dup_descs}",
+                    speaker_id=EA_ID)
 
     if recurring_items:
         recurring_descs = "\n".join(f"  - {r.get('description', '')[:80]}" for r in recurring_items)
         await _chat(room_id, "EA", "EA",
-                    f"[Warning] The following {len(recurring_items)} improvements have been proposed multiple times without resolution, requiring CEO attention:\n{recurring_descs}")
+                    f"[Warning] The following {len(recurring_items)} improvements have been proposed multiple times without resolution, requiring CEO attention:\n{recurring_descs}",
+                    speaker_id=EA_ID)
         await _publish(EventType.RECURRING_ACTION_ITEMS, {
             "items": [r.get("description", "") for r in recurring_items],
             "message": f"{len(recurring_items)} improvements keep recurring and may not be resolvable through normal means; CEO decision needed",
         })
 
     if not unique_items:
-        await _chat(room_id, "EA", "EA", "All improvement items have been proposed in previous meetings; no new action plans.")
+        await _chat(room_id, "EA", "EA", "All improvement items have been proposed in previous meetings; no new action plans.", speaker_id=EA_ID)
         return {"approved": [], "rejected_count": 0, "skipped_duplicates": len(dup_items), "reason": "All are duplicates"}
 
     action_items = unique_items
@@ -1450,7 +1470,8 @@ async def _ea_auto_approve_actions(
     approved = [action_items[i] for i in approved_indices if i < len(action_items)]
 
     await _chat(room_id, "EA", "EA",
-                f"[Approval Result] Approved {len(approved)} items, rejected {len(rejected_indices)} items. {ea_reason}")
+                f"[Approval Result] Approved {len(approved)} items, rejected {len(rejected_indices)} items. {ea_reason}",
+                speaker_id=EA_ID)
 
     if approved:
         # Execute: push remaining (non-asset) actions to COO
@@ -1546,13 +1567,13 @@ async def _run_post_task_routine_fallback(task_summary: str, participants: list[
     try:
         # PHASE 1: Review Meeting
         await _publish(EventType.ROUTINE_PHASE, {"phase": "Phase 1", "message": "Review meeting begins — employee self-evaluation"})
-        await _chat(room.id, "HR", "HR", "The review meeting has officially begun. Please proceed with self-evaluations in turn.")
+        await _chat(room.id, "HR", "HR", "The review meeting has officially begun. Please proceed with self-evaluations in turn.", speaker_id=HR_ID)
         phase1_result = await _run_review_phase1(task_summary, participants, workflow_doc, room.id)
         meeting_doc["phase1"] = phase1_result
 
         # PHASE 2: Operations Review
         await _publish(EventType.ROUTINE_PHASE, {"phase": "Phase 2", "message": "Operations review — COO producing report"})
-        await _chat(room.id, "HR", "HR", "Phase 2 begins. COO, please report on operations.")
+        await _chat(room.id, "HR", "HR", "Phase 2 begins. COO, please report on operations.", speaker_id=HR_ID)
         phase2_result = await _run_review_phase2(
             task_summary, participants, phase1_result, workflow_doc, room.id
         )
@@ -1659,7 +1680,7 @@ async def _run_review_phase1(
             CTX_KEY_EVALUATION: eval_text,
         })
         display = emp_nickname or emp_name
-        await _chat(room_id, display, emp_role, eval_text)
+        await _chat(room_id, display, emp_role, eval_text, speaker_id=emp_id)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": "Phase 1", "message": "Employee self-evaluation complete, senior employees begin peer review"})
 
@@ -1708,7 +1729,7 @@ async def _run_review_phase1(
         review_summary = "; ".join(
             f"{r.get('name','')}: {r.get('review','')[:60]}" for r in reviews
         )
-        await _chat(room_id, display, senior_data.get(PF_ROLE, ""), f"[Peer Review] {review_summary}")
+        await _chat(room_id, display, senior_data.get(PF_ROLE, ""), f"[Peer Review] {review_summary}", speaker_id=senior_id)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": "Phase 1", "message": "Peer review complete, HR summarizing improvement points"})
 
@@ -1745,7 +1766,7 @@ async def _run_review_phase1(
         f"{it.get('employee','')}: {', '.join(it.get('improvements',[]))[:60]}"
         for it in improvements
     )
-    await _chat(room_id, "HR", "HR", f"[Summary] {hr_msg}")
+    await _chat(room_id, "HR", "HR", f"[Summary] {hr_msg}", speaker_id=HR_ID)
 
     await _publish(EventType.ROUTINE_PHASE, {
         "phase": "Phase 1",
@@ -1784,7 +1805,7 @@ async def _run_review_phase2(
     )
     resp = await tracked_ainvoke(llm, coo_prompt, category="routine", employee_id=COO_ID)
     result["coo_report"] = resp.content
-    await _chat(room_id, "COO", "COO", result["coo_report"])
+    await _chat(room_id, "COO", "COO", result["coo_report"], speaker_id=COO_ID)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": "Phase 2", "message": "COO report complete, employee open floor"})
 
@@ -1830,7 +1851,7 @@ async def _run_review_phase2(
             "feedback": feedback_content,
         })
         display = emp_nickname or emp_name
-        await _chat(room_id, display, emp_role, feedback_content)
+        await _chat(room_id, display, emp_role, feedback_content, speaker_id=emp_id)
 
     await _publish(EventType.ROUTINE_PHASE, {"phase": "Phase 2", "message": "Open floor concluded, COO and HR compiling action plan"})
 
@@ -2085,7 +2106,7 @@ async def run_all_hands_meeting(ceo_message: str) -> None:
             "phase": "All-Hands Meeting",
             "message": f"CEO issued directive: {ceo_message[:100]}"
         })
-        await _chat(room.id, "CEO", "CEO", ceo_message)
+        await _chat(room.id, "CEO", "CEO", ceo_message, speaker_id=CEO_ID)
 
         llm = make_llm(HR_ID)
 
@@ -2116,7 +2137,7 @@ async def run_all_hands_meeting(ceo_message: str) -> None:
             summary_text = resp.content
 
             display = emp_nickname or emp_name
-            await _chat(room.id, display, emp_data.get(PF_ROLE, ""), summary_text)
+            await _chat(room.id, display, emp_data.get(PF_ROLE, ""), summary_text, speaker_id=emp_id)
 
             await _publish(EventType.GUIDANCE_NOTED, {
                 "employee_id": emp_id,
@@ -2243,7 +2264,7 @@ async def ceo_meeting_chat(message: str) -> dict:
     room_id = meeting["room_id"]
 
     # Post CEO message to room chat
-    await _chat(room_id, "CEO", "CEO", message)
+    await _chat(room_id, "CEO", "CEO", message, speaker_id=CEO_ID)
     meeting["chat_history"].append({"speaker": "CEO", "message": message})
 
     await _publish(EventType.ROUTINE_PHASE, {
@@ -2279,7 +2300,7 @@ async def ceo_meeting_chat(message: str) -> dict:
             summary_text = resp.content
 
             display = emp_nickname or emp_name
-            await _chat(room_id, display, emp_data.get(PF_ROLE, ""), summary_text)
+            await _chat(room_id, display, emp_data.get(PF_ROLE, ""), summary_text, speaker_id=emp_id)
             meeting["chat_history"].append({"speaker": display, "message": summary_text})
 
             responses.append({
@@ -2382,7 +2403,7 @@ async def ceo_meeting_chat(message: str) -> dict:
             last_speaker_id = winner_id
 
             display = winner_data.get(PF_NICKNAME, "") or winner_data.get(PF_NAME, "")
-            await _chat(room_id, display, winner_data.get(PF_ROLE, ""), resp.content)
+            await _chat(room_id, display, winner_data.get(PF_ROLE, ""), resp.content, speaker_id=winner_id)
             meeting["chat_history"].append({"speaker": display, "message": resp.content})
 
             responses.append({
@@ -2488,7 +2509,7 @@ async def end_ceo_meeting() -> dict:
     summary_msg = f"Meeting concluded. {len(action_points)} action point(s) identified."
     if action_points:
         summary_msg += "\n" + "\n".join(f"• {ap}" for ap in action_points)
-    await _chat(room_id, "EA", "EA", summary_msg)
+    await _chat(room_id, "EA", "EA", summary_msg, speaker_id=EA_ID)
 
     await _publish(EventType.ROUTINE_PHASE, {
         "phase": "CEO Meeting",

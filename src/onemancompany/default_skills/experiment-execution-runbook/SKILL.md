@@ -1,6 +1,6 @@
 ---
 name: experiment-execution-runbook
-description: Stage 6 (Auto Experiment) runbook. Reads stage5_assignments.md row by row and dispatches each task — using the autoresearch API for remote-execution rows and explicitly deferring non-runner rows. Writes a consolidated, evidence-bearing report to stage6_experimentalist.md.
+description: Stage 6 (Auto Experiment) runbook. Reads stage5_assignments.md row by row and dispatches each task — using the experiment-infra API for remote-execution rows and explicitly deferring non-runner rows. Writes a consolidated, evidence-bearing report to stage6_experimentalist.md.
 allowed-tools: Bash, Read, Write
 ---
 
@@ -30,11 +30,11 @@ Walk each row top-to-bottom and route by the **Skill** column.
 
 ### Path A: Skill includes `experiment_runner` (remote execution)
 
-You have the autoresearch runbook on hand. Load it once at the top of
+You have the experiment-infra runbook on hand. Load it once at the top of
 Phase 2:
 
 ```
-load_skill("autoresearch")
+load_skill("experiment-infra")
 ```
 
 For each `experiment_runner` row:
@@ -51,7 +51,7 @@ For each `experiment_runner` row:
    upload it. Prefer absolute paths.
 4. **Submit.** Use `fast_submit.sh`:
    - `--yaml <path>` when the Task names a YAML in
-     `default_skills/autoresearch/assets/` or describes one
+     `default_skills/experiment-infra/assets/` or describes one
    - `-c "<command>"` for one-off shell commands
    - `--config` defaults to `base.conf.json` (run_local:true). Use
      `skypilot_container.conf.json` only when the Task explicitly asks
@@ -136,11 +136,11 @@ Include run_ids in the summary so the critic can spot-check them.
   `status: failed` and paste the error. Made-up results are an
   auto-REJECT from the Stage 6 critic.
 - **Don't simulate when a runner is available.** If `experiment_runner`
-  is the assigned skill and the autoresearch API is reachable, you must
+  is the assigned skill and the experiment-infra API is reachable, you must
   actually submit — not describe what would happen.
 - **Don't run experiments locally on the OMC host.** Remote execution
-  goes through autoresearch. Local-only work is deferred to its assignee.
-- **Don't echo `INFRA_SESSION_KEY`.** The autoresearch runbook covers
+  goes through experiment-infra. Local-only work is deferred to its assignee.
+- **Don't echo `INFRA_SESSION_KEY`.** The experiment-infra runbook covers
   this; the same rule applies in the consolidated report.
 - **Don't re-design the experiment.** The Stage 5 plan is the source of
   truth. If it's wrong, file a blocking issue and STOP — do not patch it
@@ -149,7 +149,7 @@ Include run_ids in the summary so the critic can spot-check them.
 ## Degraded mode (no `experiment_runner` employee on roster)
 
 If you reach Phase 2A but realize you (the dispatcher) don't have the
-autoresearch runbook (the platform routed this Stage 6 to an employee
+experiment-infra runbook (the platform routed this Stage 6 to an employee
 without `experiment_runner` skill — typically a fallback `experimentalist`):
 
 - Mark every Path A row as **blocked — no runner skill available**.

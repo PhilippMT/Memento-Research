@@ -68,7 +68,10 @@ ensure_venv() {
   fi
 
   info "Installing dependencies..."
-  uv pip install -e . -q
+  # Pin install target to the project venv. Without --python, uv falls back to
+  # an active CONDA_PREFIX when VIRTUAL_ENV is unset, installing the package
+  # outside .venv and breaking the subsequent `$PYTHON -c "from onemancompany..."`.
+  VIRTUAL_ENV="$REPO_DIR/.venv" uv pip install -e . -q --python "$PYTHON"
 }
 
 resolve_env_source() {

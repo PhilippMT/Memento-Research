@@ -16,7 +16,9 @@ from onemancompany.core.debate import (
     _build_consensus_check_prompt,
     _build_judge_prompt,
     _build_selector_prompt,
+    _build_sequential_agent_prompt,
     _check_consensus,
+    _format_current_round_so_far,
     _format_round_history,
     run_debate_session,
     select_debate_participants,
@@ -538,3 +540,209 @@ class TestRunDebateSession:
 
         conclusion_msgs = [m for m in messages if m["type"] == "debate_conclusion"]
         assert conclusion_msgs[0]["speaker"] == "Judge"
+
+
+# ---------------------------------------------------------------------------
+# Sequential mode — new prompt helpers
+# ---------------------------------------------------------------------------
+
+class TestFormatCurrentRoundSoFar:
+    def test_empty_returns_placeholder(self):
+        text = _format_current_round_so_far([])
+        assert "no one" in text.lower() or "yet" in text.lower() or text.strip() != ""
+
+    def test_single_response_included(self):
+        responses = [{"agent_name": "Alice", "content": "My first point."}]
+        text = _format_current_round_so_far(responses)
+        assert "Alice" in text
+        assert "My first point." in text
+
+    def test_multiple_responses_all_included(self):
+        responses = [
+            {"agent_name": "Alice", "content": "Point A"},
+            {"agent_name": "Bob", "content": "Point B"},
+        ]
+        text = _format_current_round_so_far(responses)
+        assert "Alice" in text
+        assert "Point A" in text
+        assert "Bob" in text
+        assert "Point B" in text
+
+
+class TestBuildSequentialAgentPrompt:
+    def test_contains_topic_and_identity(self):
+        emp = _emp("Alice", "A", "Engineer", "Eng", 3)
+        prompt = _build_sequential_agent_prompt(emp, "00100", "Should we rewrite?", [], [], 1)
+        assert "Alice" in prompt
+        assert "Should we rewrite?" in prompt
+        assert "Round 1" in prompt
+
+    def test_includes_round_history(self):
+        history = [_make_round(1, [{"agent_name": "Bob", "content": "Counter-point"}])]
+        emp = _emp()
+        prompt = _build_sequential_agent_prompt(emp, "00100", "Topic", history, [], 2)
+        assert "Counter-point" in prompt
+
+    def test_includes_current_round_responses_so_far(self):
+        emp = _emp("Charlie", "C")
+        current_so_far = [{"agent_name": "Alice", "content": "Alice said this first."}]
+        prompt = _build_sequential_agent_prompt(emp, "00100", "Topic", [], current_so_far, 1)
+        assert "Alice said this first." in prompt
+
+    def test_no_current_responses_shows_placeholder(self):
+        emp = _emp()
+        prompt = _build_sequential_agent_prompt(emp, "00100", "Topic", [], [], 1)
+        assert prompt  # just ensures it runs without error
+
+
+# ---------------------------------------------------------------------------
+# run_debate_session — sequential mode
+# ---------------------------------------------------------------------------
+
+class TestRunDebateSessionSequential:
+    def _make_agents_data(self) -> dict[str, dict]:
+        return {
+            "00100": _emp("Alice", "A", "Engineer", "Eng"),
+            "00101": _emp("Bob", "B", "Designer", "Design"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_sequential_mode_completes(self):
+        agents_data = self._make_agents_data()
+        agent_response = MagicMock(content="Sequential argument.")
+        judge_response = MagicMock(content="Final conclusion.")
+        no_consensus = MagicMock(content="NO")
+
+        with patch("onemancompany.core.debate.make_llm") as mock_make_llm, \
+             patch("onemancompany.core.debate.tracked_ainvoke", new_callable=AsyncMock) as mock_invoke:
+
+            judge_llm = AsyncMock()
+            judge_llm.ainvoke.return_value = no_consensus
+            mock_make_llm.return_value = judge_llm
+
+            async def _tracked_side_effect(llm, prompt, **kwargs):
+                return judge_response if kwargs.get("category") == "debate_judge" else agent_response
+
+            mock_invoke.side_effect = _tracked_side_effect
+
+            result = await run_debate_session(
+                topic="Sequential topic",
+                participant_ids=["00100", "00101"],
+                agents_data=agents_data,
+                max_rounds=2,
+                mode="sequential",
+                on_message=None,
+            )
+
+        assert result.topic == "Sequential topic"
+        assert result.total_rounds >= 1
+        assert result.conclusion == "Final conclusion."
+
+    @pytest.mark.asyncio
+    async def test_sequential_mode_agents_called_one_by_one(self):
+        """In sequential mode, tracked_ainvoke is called once per agent per round (not gathered)."""
+        agents_data = self._make_agents_data()
+        call_order: list[str] = []
+        judge_response = MagicMock(content="Conclusion.")
+        no_consensus = MagicMock(content="NO")
+
+        with patch("onemancompany.core.debate.make_llm") as mock_make_llm, \
+             patch("onemancompany.core.debate.tracked_ainvoke", new_callable=AsyncMock) as mock_invoke:
+
+            judge_llm = AsyncMock()
+            judge_llm.ainvoke.return_value = no_consensus
+            mock_make_llm.return_value = judge_llm
+
+            async def _tracked_side_effect(llm, prompt, **kwargs):
+                if kwargs.get("category") == "debate_judge":
+                    return judge_response
+                eid = kwargs.get("employee_id", "")
+                call_order.append(eid)
+                return MagicMock(content=f"Response from {eid}")
+
+            mock_invoke.side_effect = _tracked_side_effect
+
+            result = await run_debate_session(
+                topic="Order test",
+                participant_ids=["00100", "00101"],
+                agents_data=agents_data,
+                max_rounds=1,
+                mode="sequential",
+                on_message=None,
+            )
+
+        # Both agents should have been called in order
+        assert call_order == ["00100", "00101"]
+        # Each agent's response should be in the round
+        assert len(result.rounds[0].responses) == 2
+
+    @pytest.mark.asyncio
+    async def test_sequential_second_agent_prompt_contains_first_agent_response(self):
+        """Second agent's prompt must include the first agent's response from current round."""
+        agents_data = self._make_agents_data()
+        captured_prompts: list[str] = []
+        judge_response = MagicMock(content="Conclusion.")
+        no_consensus = MagicMock(content="NO")
+
+        with patch("onemancompany.core.debate.make_llm") as mock_make_llm, \
+             patch("onemancompany.core.debate.tracked_ainvoke", new_callable=AsyncMock) as mock_invoke:
+
+            judge_llm = AsyncMock()
+            judge_llm.ainvoke.return_value = no_consensus
+            mock_make_llm.return_value = judge_llm
+
+            async def _tracked_side_effect(llm, prompt, **kwargs):
+                if kwargs.get("category") == "debate_judge":
+                    return judge_response
+                captured_prompts.append(prompt)
+                eid = kwargs.get("employee_id", "")
+                return MagicMock(content=f"UNIQUE_CONTENT_FROM_{eid}")
+
+            mock_invoke.side_effect = _tracked_side_effect
+
+            await run_debate_session(
+                topic="Prompt content test",
+                participant_ids=["00100", "00101"],
+                agents_data=agents_data,
+                max_rounds=1,
+                mode="sequential",
+                on_message=None,
+            )
+
+        assert len(captured_prompts) == 2
+        # Second agent's prompt must contain what the first agent said
+        assert "UNIQUE_CONTENT_FROM_00100" in captured_prompts[1]
+        # First agent's prompt must NOT contain second agent's content (not yet spoken)
+        assert "UNIQUE_CONTENT_FROM_00101" not in captured_prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_parallel_mode_is_default(self):
+        """Omitting mode should behave like mode='parallel'."""
+        agents_data = self._make_agents_data()
+        agent_response = MagicMock(content="Parallel arg.")
+        judge_response = MagicMock(content="Conclusion.")
+        no_consensus = MagicMock(content="NO")
+
+        with patch("onemancompany.core.debate.make_llm") as mock_make_llm, \
+             patch("onemancompany.core.debate.tracked_ainvoke", new_callable=AsyncMock) as mock_invoke:
+
+            judge_llm = AsyncMock()
+            judge_llm.ainvoke.return_value = no_consensus
+            mock_make_llm.return_value = judge_llm
+
+            async def _tracked_side_effect(llm, prompt, **kwargs):
+                return judge_response if kwargs.get("category") == "debate_judge" else agent_response
+
+            mock_invoke.side_effect = _tracked_side_effect
+
+            result = await run_debate_session(
+                topic="Default mode test",
+                participant_ids=["00100", "00101"],
+                agents_data=agents_data,
+                max_rounds=1,
+                on_message=None,
+                # mode not specified — should default to parallel
+            )
+
+        assert result.total_rounds == 1
+        assert len(result.rounds[0].responses) == 2

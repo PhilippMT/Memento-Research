@@ -11,6 +11,7 @@ task tree for node management, and WebSocket events for frontend updates.
 
 from __future__ import annotations
 
+import re
 import yaml
 from pathlib import Path
 from loguru import logger
@@ -37,6 +38,17 @@ STAGES = [
 
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
+
+# Iteration identifier used in git tag names (``<iteration>/stage-<N>``).
+# The literal directory name (e.g. ``iter_001``) is fine — git tag names
+# allow underscores. Centralised here so the engine and project_repo
+# agree on tag format.
+_DEFAULT_ITERATION = "iter_001"
+
+
+class RevertNotAllowedError(Exception):
+    """Raised when ``revert_to_stage`` is called in a phase that would
+    clobber in-flight work. Only ``gate`` and ``done`` are safe."""
 
 # Tag for pipeline-managed nodes so vessel can identify them
 PIPELINE_NODE_TAG = "pipeline_managed"
@@ -80,7 +92,7 @@ def _find_employee_for_stage(stage_id: int, primary_skill: str) -> str | None:
     """Resolve the producer employee for a stage with stage-specific fallbacks.
 
     Stage 6 (Auto Experiment) prefers an `experiment_runner` employee — they
-    carry the `autoresearch` runbook and can actually drive remote infra.
+    carry the `experiment-infra` runbook and can actually drive remote infra.
     If no runner is on the roster, fall back to `experimentalist` (the
     default research talent), who can still produce a simulated report.
     """
@@ -231,6 +243,31 @@ class PipelineEngine:
     # Public API — called by routes.py and vessel.py
     # ------------------------------------------------------------------
 
+    def _iteration_id(self) -> str:
+        """Identifier used in git tag names. Standard layout is
+        ``.../iterations/iter_NNN``; we use the basename directly so
+        multi-iteration projects keep their tag namespaces separate.
+
+        For legacy / non-standard layouts where the basename doesn't
+        match ``iter_\\d+``, we hash the full project_dir into a stable
+        synthetic id to avoid cross-iteration tag collisions (which
+        would silently overwrite each other under ``tag -f``).
+        """
+        name = Path(self.project_dir).name
+        if name and re.match(r"^iter_\d+$", name):
+            return name
+        if not name:
+            return _DEFAULT_ITERATION
+        # Non-standard dir name. Derive a stable synthetic id from the
+        # path so different projects with the same basename don't collide.
+        import hashlib
+        digest = hashlib.sha1(self.project_dir.encode("utf-8")).hexdigest()[:8]
+        logger.debug(
+            "[PIPELINE] Non-standard project dir basename {!r}; using synthetic iteration id iter_{}",
+            name, digest,
+        )
+        return f"iter_{digest}"
+
     def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None):
         """Begin the pipeline from the given stage."""
         self.state["current_stage"] = max(1, min(start_stage, 9))
@@ -241,8 +278,43 @@ class PipelineEngine:
         self.state["phase"] = "producer"
         self.state["retries"] = 0
         self._save()
+        # Auto-init the workspace as a git repo so per-stage commits and
+        # later revert-to-here ops have somewhere to land. Idempotent —
+        # existing repos are left alone.
+        from onemancompany.core import project_repo
+        try:
+            project_repo.ensure_initialized(self.project_dir, iteration=self._iteration_id())
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("[PIPELINE] project_repo init failed for {}: {}", self.project_dir, exc)
         logger.info("[PIPELINE] Starting from stage {} to stage {}", self.state["current_stage"], self.state["end_stage"])
         self._dispatch_producer()
+
+    def queue_pending_feedback(self, text: str) -> None:
+        """Buffer CEO/user feedback to inject into the next producer dispatch.
+
+        Called when the CEO sends a chat message while the pipeline is mid-flight
+        (producer/critic running, or auto-retrying after a REJECT). The pipeline
+        is not at a gate, so we cannot call ``on_ceo_approve`` — but the user's
+        guidance is valuable for the next producer iteration. The buffered text
+        is consumed on the next ``_dispatch_producer`` call.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        pending = self.state.get("pending_user_feedback", "")
+        self.state["pending_user_feedback"] = (pending + "\n\n" + text) if pending else text
+        self._save()
+        logger.info(
+            "[PIPELINE] Queued CEO feedback (len={}) at stage {} phase {}",
+            len(text), self.current_stage, self.phase,
+        )
+
+    def _consume_pending_feedback(self) -> str:
+        text = self.state.get("pending_user_feedback", "")
+        if text:
+            self.state["pending_user_feedback"] = ""
+            self._save()
+        return text
 
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
@@ -264,6 +336,9 @@ class PipelineEngine:
         )
         if feedback:
             desc += f"\nFeedback from previous review:\n{feedback}\n"
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += f"\nDirect guidance from CEO (received during the previous attempt):\n{user_feedback}\n"
         # Stage 4 (Methodology Design) must run a multi-agent debate before
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
@@ -290,7 +365,7 @@ class PipelineEngine:
                 "experiment plan directly without convening the debate first.\n"
             )
         # Stage 6 (Auto Experiment) dispatches the Stage 5 assignments table
-        # row by row. Remote-execution rows go through the autoresearch
+        # row by row. Remote-execution rows go through the experiment-infra
         # runbook (real HTTP submit to the lab infra); other rows are
         # deferred to their named assignees.
         elif stage["id"] == 6:
@@ -300,7 +375,7 @@ class PipelineEngine:
                 "and follow it. The runbook tells you how to read "
                 "stage5_assignments.md and route each row by its `skill` "
                 "column. For rows tagged `experiment_runner`, you also have "
-                'load_skill("autoresearch") available — that gives you the '
+                'load_skill("experiment-infra") available — that gives you the '
                 "fast_*.sh scripts to submit real runs to the remote infra, "
                 "poll status, and capture log_tail + metrics. Do not "
                 "fabricate or simulate results — if a remote submit is "
@@ -432,19 +507,293 @@ class PipelineEngine:
                     self._save()
                     self._emit_gate_event(stage["id"], confidence, exhausted=True)
 
+    def on_task_failed(self, employee_id: str, node_id: str, result: str):
+        """Called by vessel when a pipeline-managed task fails (the agent
+        threw, timed out, or otherwise produced no usable output).
+
+        Branches on the current phase:
+
+        * ``producer`` failure → retry the producer with the failure
+          context as feedback (up to ``MAX_RETRIES``), then open the CEO
+          gate. Symmetric with a critic REJECT.
+
+        * ``critic`` failure → auto-pass the stage using the already-stored
+          producer output. Mirrors the "no critic employee found" branch
+          in ``_dispatch_critic``. Re-running the producer would discard
+          its existing output and double-bill tokens for a problem that
+          isn't the producer's.
+
+        Without this hook a failed pipeline node would fall through to
+        vessel.py's legacy completion check, which would mistake the
+        first-completed stage anchor for an EA orchestrator and declare
+        the project complete.
+        """
+        stage = self._stage_def()
+        current_phase = self.phase
+
+        if current_phase == "critic":
+            stored = self.state.get("stage_results", {}).get(str(stage["id"]), "")
+            logger.warning(
+                "[PIPELINE] Stage {} critic FAILED — auto-passing on stored producer output (len={})",
+                stage["id"], len(stored),
+            )
+            self._on_critic_pass(stored, confidence=None)
+            return
+
+        if current_phase != "producer":
+            # Should not happen — gate/done/failed phases mean no task is in flight.
+            logger.warning(
+                "[PIPELINE] on_task_failed called in unexpected phase {} (stage {}); ignoring",
+                current_phase, stage["id"],
+            )
+            return
+
+        truncated = (result or "(no output)").strip()[:600]
+        failure_feedback = (
+            f"Producer for Stage {stage['id']} ({stage['name']}) failed without producing a deliverable. "
+            f"Failure context:\n{truncated}"
+        )
+        retries = self.state.get("retries", 0)
+        if retries < MAX_RETRIES:
+            self.state["retries"] = retries + 1
+            self.state["phase"] = "producer"
+            self._save()
+            logger.warning(
+                "[PIPELINE] Stage {} producer FAILED (retry {}/{}) — re-dispatching",
+                stage["id"], retries + 1, MAX_RETRIES,
+            )
+            self._emit_stage_event("stage_failed", stage["id"])
+            self._dispatch_producer(feedback=failure_feedback)
+        else:
+            logger.error(
+                "[PIPELINE] Stage {} exhausted retries after producer failure — holding for CEO",
+                stage["id"],
+            )
+            self.state["phase"] = "gate"
+            self._save()
+            self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+
     def _on_critic_pass(self, result: str, confidence: float = None):
         """Critic passed → hold for CEO gate."""
         stage = self._stage_def()
         self.state["phase"] = "gate"
         self._save()
+        # Commit the workspace as the canonical checkpoint for this stage
+        # before opening the gate. This is the quiescent moment: producer
+        # and critic are both finished, nothing else is writing files.
+        # The tag ``<iteration>/stage-<N>`` lets the user later revert
+        # here to redo this stage with new instructions.
+        from onemancompany.core import project_repo
+        try:
+            project_repo.commit_stage(
+                self.project_dir,
+                iteration=self._iteration_id(),
+                stage=stage["id"],
+                stage_name=stage["name"],
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "[PIPELINE] commit_stage failed at stage {}: {}", stage["id"], exc,
+            )
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)
+
+    async def _cancel_active_task_and_wait(self, *, timeout: float = 5.0) -> None:
+        """Cancel the engine's active producer/critic task and wait for it
+        to actually terminate.
+
+        ``asyncio.Task.cancel()`` is non-blocking — it schedules cancellation;
+        the task only stops on its next ``await``. If we returned right after
+        calling cancel and proceeded to ``git reset --hard``, the cancelled
+        producer could still land a ``write()`` between our reset and the
+        checkout. We grab the task handle *before* calling
+        ``abort_employee`` (which pops it from ``_running_tasks``), then
+        ``await`` it with a timeout so the cancellation has actually
+        propagated through ``_run_task``'s finally block.
+        """
+        if self.phase in ("gate", "done", "failed"):
+            return
+        emp_id = self.state.get("active_employee_id")
+        if not emp_id:
+            return
+
+        from onemancompany.core.agent_loop import employee_manager
+
+        # Capture the task handle before abort_employee pops it.
+        running = employee_manager._running_tasks.get(emp_id)
+        try:
+            cancelled = employee_manager.abort_employee(emp_id)
+            logger.info(
+                "[PIPELINE] Cancelled {} active task(s) for employee {} before revert",
+                cancelled, emp_id,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "[PIPELINE] abort_employee({}) failed during revert: {}",
+                emp_id, exc,
+            )
+
+        # Wait for the producer's await chain to unwind. We swallow
+        # CancelledError (expected) and the task's own task-side
+        # exceptions (they're already logged by _run_task's finally
+        # block) — what matters here is that the task has finished, so
+        # no further file writes can land.
+        if running is not None and not running.done():
+            import asyncio
+            try:
+                await asyncio.wait_for(asyncio.shield(running), timeout=timeout)
+            except asyncio.CancelledError:
+                # Expected: that's what abort_employee() asked for. Task has
+                # finished unwinding, which is the post-condition we needed.
+                logger.debug("[PIPELINE] Cancelled task for {} terminated cleanly", emp_id)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[PIPELINE] Producer for {} did not stop within {}s; "
+                    "proceeding with revert anyway", emp_id, timeout,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[PIPELINE] Cancelled task raised {} during teardown (ignored)", exc,
+                )
+
+        self.state["active_node_id"] = None
+        self.state["active_employee_id"] = None
+
+    # ------------------------------------------------------------------
+    # Public API — revert to a previous stage with new instructions
+    # ------------------------------------------------------------------
+
+    async def revert_to_stage(
+        self, *, stage: int, instructions: str, branch_name: str | None = None,
+    ) -> str:
+        """Create a feature branch rooted at stage ``stage - 1``'s tag,
+        switch the workspace to it, queue the user's instructions for
+        the stage's producer, and re-dispatch.
+
+        Returns the (possibly auto-generated) branch name so callers can
+        surface it to the user.
+
+        Raises ``ValueError`` for out-of-range stage numbers.
+
+        Behaviour when a later stage is mid-flight (phase ∈ {producer,
+        critic}): the active task is cancelled and any uncommitted
+        workspace changes from that cancelled task are discarded before
+        the checkout. Callers don't need to wait for a gate — the engine
+        handles the cleanup so reverts work at any point in the pipeline.
+
+        The semantics deliberately keep the *current branch's* tags and
+        commits intact — reverting forks; it does not destroy history.
+        """
+        end = self.state.get("end_stage", 9)
+        if not (1 <= stage <= end):
+            raise ValueError(
+                f"revert_to_stage: stage must be in [1, {end}]; got {stage}"
+            )
+
+        instructions = (instructions or "").strip()
+
+        # Validate dispatchability BEFORE touching git or cancelling
+        # tasks. The whole revert operation should be either fully
+        # successful or fully a no-op; otherwise we leave the user on a
+        # new branch with corrupt state and no in-flight task.
+        # ``stage_assignments`` honours user overrides; otherwise the
+        # engine resolves by skill from ``employee_configs``.
+        stage_def = STAGES[stage - 1]
+        assignments = self.state.get("stage_assignments", {})
+        assigned = assignments.get(str(stage_def["id"]))
+        employee_id = assigned if assigned else _find_employee_by_skill(stage_def["skill"])
+        if not employee_id:
+            raise RevertNotAllowedError(
+                f"Cannot revert to stage {stage}: no employee with skill "
+                f"'{stage_def['skill']}' is available to run the producer."
+            )
+
+        # Cancel any in-flight producer/critic task before we touch git
+        # and wait for it to actually stop (cancel() alone is non-blocking).
+        # The cancelled task may have written partial output to the
+        # workspace; ``discard_uncommitted_changes`` below scrubs that so
+        # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
+        # passes.
+        was_mid_flight = self.phase in ("producer", "critic")
+        if was_mid_flight:
+            await self._cancel_active_task_and_wait()
+
+        from onemancompany.core import project_repo
+        # Only scrub the workspace when we just cancelled a task. At
+        # gate/done the workspace should already be clean (the previous
+        # stage's commit_stage left it that way), and an unconditional
+        # ``git reset --hard`` here would silently destroy any manual
+        # edits the user made between gates. Let
+        # ``checkout_branch_from_stage`` raise ``DirtyWorkspaceError``
+        # loudly in that case.
+        if was_mid_flight:
+            project_repo.discard_uncommitted_changes(self.project_dir)
+        new_branch = project_repo.checkout_branch_from_stage(
+            self.project_dir,
+            iteration=self._iteration_id(),
+            stage=stage,
+            branch_name=branch_name,
+        )
+
+        # The checkout flipped pipeline_state.yaml back to its previous
+        # snapshot. Reload from disk; refuse to proceed if the snapshot
+        # somehow lacks a state file (would silently retain the abandoned
+        # branch's state otherwise — corrupting the new branch on the
+        # next ``_save``).
+        loaded = _load_state(self.project_dir)
+        if not loaded:
+            raise RevertNotAllowedError(
+                f"Reverted to branch '{new_branch}' but the checkout did "
+                f"not restore a pipeline_state.yaml. Workspace may be "
+                f"corrupt — investigate before retrying."
+            )
+        self.state = loaded
+        self.state["current_stage"] = stage
+        self.state["phase"] = "producer"
+        self.state["retries"] = 0
+        self.state["critic_result"] = None
+        self.state["active_node_id"] = None
+        self.state["active_employee_id"] = None
+        # Drop any stage results at or beyond the revert point — they
+        # belong to the abandoned branch and would mislead the producer's
+        # context-building.
+        sr = self.state.get("stage_results", {})
+        self.state["stage_results"] = {
+            sid: result for sid, result in sr.items() if int(sid) < stage
+        }
+        # Queue the user's instructions; _dispatch_producer consumes them
+        # via _consume_pending_feedback and prepends them to the prompt.
+        if instructions:
+            self.state["pending_user_feedback"] = instructions
+        self._save()
+
+        logger.info(
+            "[PIPELINE] Reverted to stage {} on branch '{}' with {} chars of instructions",
+            stage, new_branch, len(instructions),
+        )
+        self._dispatch_producer()
+        return new_branch
+
+    # Keywords that trigger a *full re-dispatch* of the current stage from
+    # scratch (retries=0). Kept narrow on purpose: every CEO chat at the
+    # gate flows through this matcher (since task_followup now routes
+    # gate-phase feedback here), so any false positive silently undoes the
+    # stage and confuses the user. Single-character triggers like "再" or
+    # ambiguous edits like "修改" are excluded — they appear in legitimate
+    # advance-with-comment chats ("再补充一点", "可以修改一下措辞") that
+    # should NOT trigger a redo.
+    _REVISION_KEYWORDS = (
+        "REVISION", "REVISE", "RE-RUN", "REDO",
+        "重新",  # "重新跑", "重新写", "重新做"
+        "重做", "重写", "重跑",
+        "再来一遍", "再做一遍", "再写一遍", "再跑一遍",
+    )
 
     def on_ceo_approve(self, feedback: str = ""):
         """CEO approved the current stage. Advance or re-run."""
         stage = self._stage_def()
 
-        if feedback and any(kw in feedback.upper() for kw in ["REVISION", "REVISE", "RE-RUN", "重新", "修改", "再"]):
+        if feedback and any(kw in feedback.upper() for kw in self._REVISION_KEYWORDS):
             # CEO wants revision
             logger.info("[PIPELINE] CEO requested revision for stage {}", stage["id"])
             self.state["retries"] = 0
@@ -564,6 +913,11 @@ class PipelineEngine:
 
     def _emit_pipeline_complete(self):
         import asyncio
+        # Close the CEO root in the task tree so the UI's
+        # "project complete" affordance fires HERE — at the end of the
+        # pipeline — instead of at the legacy EA-anchor completion point
+        # (which mis-fired after Stage 1).
+        self._mark_ceo_root_finished()
         payload = {
             "type": "pipeline_complete",
             "project_id": self.project_id,
@@ -575,3 +929,75 @@ class PipelineEngine:
             loop.create_task(self._emit_async(payload))
         except RuntimeError as exc:
             logger.debug("Skipping pipeline complete event; no running event loop: {}", exc)
+
+    def _mark_ceo_root_finished(self) -> None:
+        """On pipeline completion, walk the CEO root through legal status
+        transitions to FINISHED so downstream consumers (project archive,
+        frontend completion banner) see the project as closed.
+
+        Status transitions are validated against ``VALID_TRANSITIONS`` per
+        step. If any step is illegal (e.g. the root is in BLOCKED/FAILED/
+        CANCELLED), the method logs a warning and bails — the caller
+        should not assume the root reached FINISHED.
+        """
+        from onemancompany.core.task_tree import get_tree
+        from onemancompany.core.task_lifecycle import (
+            NodeType, TaskPhase, can_transition,
+        )
+        from onemancompany.core.config import TASK_TREE_FILENAME
+
+        tree_path = Path(self.project_dir) / TASK_TREE_FILENAME
+        if not tree_path.exists():
+            return
+        try:
+            tree = get_tree(tree_path, project_id=self.project_id)
+            root = tree.get_node(tree.root_id) if tree.root_id else None
+            if not root or root.node_type != NodeType.CEO_PROMPT:
+                return
+            if root.status == TaskPhase.FINISHED.value:
+                return  # already terminal — idempotent
+
+            # FAILED/CANCELLED roots are explicitly out of scope: the project
+            # was marked failed/cancelled elsewhere (e.g. vessel root-failed
+            # path), so finalizing it as a completed pipeline would
+            # contradict that decision. Walking FAILED → PROCESSING → ...
+            # → FINISHED is technically legal under VALID_TRANSITIONS, but
+            # semantically wrong; refuse explicitly.
+            if root.status in (TaskPhase.FAILED.value, TaskPhase.CANCELLED.value):
+                logger.warning(
+                    "[PIPELINE] Refusing to finalize CEO root {} from {} — pipeline completion conflicts with terminal failure/cancellation",
+                    root.id, root.status,
+                )
+                return
+
+            # Walk PROCESSING → COMPLETED → ACCEPTED → FINISHED, validating
+            # each step. Skip steps the node is already past.
+            target_chain = [
+                TaskPhase.PROCESSING,
+                TaskPhase.COMPLETED,
+                TaskPhase.ACCEPTED,
+                TaskPhase.FINISHED,
+            ]
+            for target in target_chain:
+                if root.status == target.value:
+                    continue
+                current = TaskPhase(root.status)
+                if not can_transition(current, target):
+                    logger.warning(
+                        "[PIPELINE] Cannot finalize CEO root {}: illegal transition {} → {} (skipping rest)",
+                        root.id, current.value, target.value,
+                    )
+                    return
+                root.set_status(target)
+
+            # Synchronous save here on purpose: pipeline completion is a
+            # rare, ordering-critical event. Async save would let external
+            # readers see a stale tree between the in-memory mutation and
+            # the background flush.
+            tree.save(tree_path)
+            logger.info(
+                "[PIPELINE] Marked CEO root {} → FINISHED on pipeline completion",
+                root.id,
+            )
+        except Exception as exc:  # pragma: no cover — defensive logging
+            logger.warning("[PIPELINE] Failed to finalize CEO root on completion: {}", exc)

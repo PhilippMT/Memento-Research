@@ -1,7 +1,7 @@
 """Structural tests for the Stage 6 experiment-execution-runbook SKILL.
 
 The runbook is the bridge between Stage 5's assignments table and the
-autoresearch API — it must reference the assignments file, describe the
+experiment-infra API — it must reference the assignments file, describe the
 per-row routing, and tell the agent to never fabricate run_ids."""
 from __future__ import annotations
 
@@ -56,15 +56,15 @@ class TestRunbookBehaviour:
             "Runbook must mention the skill key it routes on"
         )
 
-    def test_loads_autoresearch_for_remote_rows(self):
+    def test_loads_experiment_infra_for_remote_rows(self):
         text = RUNBOOK.read_text(encoding="utf-8")
-        assert 'load_skill("autoresearch")' in text, (
+        assert 'load_skill("experiment-infra")' in text, (
             "For experiment_runner rows the runbook must instruct the "
-            "agent to load the autoresearch runbook"
+            "agent to load the experiment-infra runbook"
         )
 
     def test_names_the_fast_scripts(self):
-        """If the script names change in autoresearch, this test fails so
+        """If the script names change in experiment-infra, this test fails so
         we update both in lock-step."""
         text = RUNBOOK.read_text(encoding="utf-8")
         for script in (

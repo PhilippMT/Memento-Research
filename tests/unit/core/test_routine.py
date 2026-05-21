@@ -184,6 +184,39 @@ class TestChat:
         # Should not crash — non-string converted to str
         mock_bus.publish.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_chat_payload_has_canonical_speaker_fields(self):
+        """Payload must populate speaker_name (alongside legacy speaker) so
+        the frontend event adapter never renders 'Speaker undefined'."""
+        from onemancompany.core import routine as mod
+        mock_bus = AsyncMock()
+        mock_append = AsyncMock()
+        with (
+            patch.object(mod, "event_bus", mock_bus),
+            patch("onemancompany.core.store.append_room_chat", mock_append),
+        ):
+            await mod._chat("room1", "Alice", "Engineer", "hi", speaker_id="00020")
+        event = mock_bus.publish.call_args[0][0]
+        assert event.payload["speaker_name"] == "Alice"
+        assert event.payload["speaker_id"] == "00020"
+        assert event.payload["speaker"] == "Alice"  # legacy field retained for now
+
+    @pytest.mark.asyncio
+    async def test_chat_payload_speaker_id_defaults_empty(self):
+        """When the speaker is a system role with no employee id, speaker_id
+        is an empty string (never undefined / missing)."""
+        from onemancompany.core import routine as mod
+        mock_bus = AsyncMock()
+        mock_append = AsyncMock()
+        with (
+            patch.object(mod, "event_bus", mock_bus),
+            patch("onemancompany.core.store.append_room_chat", mock_append),
+        ):
+            await mod._chat("room1", "Facilitator", "HR", "msg")
+        event = mock_bus.publish.call_args[0][0]
+        assert event.payload["speaker_id"] == ""
+        assert event.payload["speaker_name"] == "Facilitator"
+
 
 # ---------------------------------------------------------------------------
 # StepContext

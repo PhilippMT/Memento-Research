@@ -917,3 +917,167 @@ class TestChildFailedResumesHoldingParent:
         # (it goes through Gate 2 incremental review path instead)
         assert ea_parent.status == TaskPhase.HOLDING.value, \
             "COMPLETED child should not trigger failure-resume on HOLDING parent"
+
+
+# ---------------------------------------------------------------------------
+# _on_child_complete_inner — pipeline-managed nodes always route to engine
+# (regression for PR #34 — legacy EA-anchor completion check mis-fired on
+#  pipeline projects when a producer FAILED, declaring the project done
+#  even though stages 2-9 were still queued.)
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineManagedRouting:
+    """Pipeline-managed node completions (including FAILED) must route to
+    the PipelineEngine and never fall through to the legacy EA-anchor
+    [PROJECT COMPLETE] check."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_managed_failed_routes_to_on_task_failed(self, tmp_path):
+        mgr = EmployeeManager()
+
+        tree = TaskTree(project_id="proj-pipe")
+        root = tree.create_root(employee_id="00001", description="CEO prompt")
+        root.node_type = "ceo_prompt"
+        root.status = TaskPhase.PROCESSING.value
+
+        stage_node = tree.add_child(
+            parent_id=root.id, employee_id="00006",
+            description="Stage 1: Topic Refinement", acceptance_criteria=[],
+        )
+        stage_node.node_type = "task"
+        stage_node.metadata = {"pipeline_managed": True}
+        stage_node.set_status(TaskPhase.PROCESSING)
+        stage_node.set_status(TaskPhase.FAILED)
+        stage_node.result = "TypeError in producer"
+        stage_node.project_id = "proj-pipe"
+        stage_node.project_dir = str(tmp_path)
+
+        tree_path = tmp_path / "task_tree.yaml"
+        tree.save(tree_path)
+
+        entry = ScheduleEntry(node_id=stage_node.id, tree_path=str(tree_path))
+
+        mock_engine = MagicMock()
+        mock_engine.current_stage = 1
+        mock_engine.phase = "producer"
+        mock_engine.on_task_failed = MagicMock()
+        mock_engine.on_task_complete = MagicMock()
+
+        with patch("onemancompany.core.task_tree.get_tree", return_value=tree), \
+             patch("onemancompany.core.task_tree.save_tree_async"), \
+             patch("onemancompany.core.vessel._store") as mock_store, \
+             patch("onemancompany.core.pipeline_engine.get_or_load_pipeline", return_value=mock_engine), \
+             patch.object(mgr, "_publish_node_update"), \
+             patch.object(mgr, "schedule_node"), \
+             patch.object(mgr, "_schedule_next"):
+            mock_store.save_employee_runtime = AsyncMock()
+
+            await mgr._on_child_complete_inner("00006", entry, project_id="proj-pipe")
+
+        # The engine — not the legacy completion code — handled the failure.
+        mock_engine.on_task_failed.assert_called_once()
+        mock_engine.on_task_complete.assert_not_called()
+        # The CEO root must NOT have been advanced to ACCEPTED/FINISHED by
+        # the legacy [PROJECT COMPLETE] handler.
+        assert root.status not in (TaskPhase.ACCEPTED.value, TaskPhase.FINISHED.value)
+
+    @pytest.mark.asyncio
+    async def test_pipeline_managed_cancelled_routes_to_on_task_failed(self, tmp_path):
+        """CANCELLED pipeline-managed nodes must route to the engine (via
+        on_task_failed) so the engine can decide retry-vs-hold. Before this
+        guard CANCELLED fell through to the legacy EA-anchor completion
+        check, same failure mode as the original Stage-1-mis-completion
+        bug."""
+        mgr = EmployeeManager()
+
+        tree = TaskTree(project_id="proj-pipe-cancel")
+        root = tree.create_root(employee_id="00001", description="CEO prompt")
+        root.node_type = "ceo_prompt"
+        root.status = TaskPhase.PROCESSING.value
+
+        stage_node = tree.add_child(
+            parent_id=root.id, employee_id="00006",
+            description="Stage 1: Topic Refinement", acceptance_criteria=[],
+        )
+        stage_node.node_type = "task"
+        stage_node.metadata = {"pipeline_managed": True}
+        stage_node.set_status(TaskPhase.CANCELLED)
+        stage_node.result = "user cancelled"
+        stage_node.project_id = "proj-pipe-cancel"
+        stage_node.project_dir = str(tmp_path)
+
+        tree_path = tmp_path / "task_tree.yaml"
+        tree.save(tree_path)
+
+        entry = ScheduleEntry(node_id=stage_node.id, tree_path=str(tree_path))
+
+        mock_engine = MagicMock()
+        mock_engine.current_stage = 1
+        mock_engine.phase = "producer"
+        mock_engine.on_task_failed = MagicMock()
+        mock_engine.on_task_complete = MagicMock()
+
+        with patch("onemancompany.core.task_tree.get_tree", return_value=tree), \
+             patch("onemancompany.core.task_tree.save_tree_async"), \
+             patch("onemancompany.core.vessel._store") as mock_store, \
+             patch("onemancompany.core.pipeline_engine.get_or_load_pipeline", return_value=mock_engine), \
+             patch.object(mgr, "_publish_node_update"), \
+             patch.object(mgr, "schedule_node"), \
+             patch.object(mgr, "_schedule_next"):
+            mock_store.save_employee_runtime = AsyncMock()
+
+            await mgr._on_child_complete_inner("00006", entry, project_id="proj-pipe-cancel")
+
+        mock_engine.on_task_failed.assert_called_once()
+        mock_engine.on_task_complete.assert_not_called()
+        assert root.status not in (TaskPhase.ACCEPTED.value, TaskPhase.FINISHED.value)
+
+    @pytest.mark.asyncio
+    async def test_pipeline_managed_completed_still_routes_to_engine(self, tmp_path):
+        """Sanity: pipeline-managed COMPLETED node continues to route to
+        engine.on_task_complete (unchanged behaviour, asserted to prevent
+        regression of the existing happy path)."""
+        mgr = EmployeeManager()
+
+        tree = TaskTree(project_id="proj-pipe-ok")
+        root = tree.create_root(employee_id="00001", description="CEO prompt")
+        root.node_type = "ceo_prompt"
+        root.status = TaskPhase.PROCESSING.value
+
+        stage_node = tree.add_child(
+            parent_id=root.id, employee_id="00006",
+            description="Stage 1: Topic Refinement", acceptance_criteria=[],
+        )
+        stage_node.node_type = "task"
+        stage_node.metadata = {"pipeline_managed": True}
+        stage_node.set_status(TaskPhase.PROCESSING)
+        stage_node.set_status(TaskPhase.COMPLETED)
+        stage_node.result = "Stage 1 done"
+        stage_node.project_id = "proj-pipe-ok"
+        stage_node.project_dir = str(tmp_path)
+
+        tree_path = tmp_path / "task_tree.yaml"
+        tree.save(tree_path)
+
+        entry = ScheduleEntry(node_id=stage_node.id, tree_path=str(tree_path))
+
+        mock_engine = MagicMock()
+        mock_engine.current_stage = 1
+        mock_engine.phase = "producer"
+        mock_engine.on_task_complete = MagicMock()
+        mock_engine.on_task_failed = MagicMock()
+
+        with patch("onemancompany.core.task_tree.get_tree", return_value=tree), \
+             patch("onemancompany.core.task_tree.save_tree_async"), \
+             patch("onemancompany.core.vessel._store") as mock_store, \
+             patch("onemancompany.core.pipeline_engine.get_or_load_pipeline", return_value=mock_engine), \
+             patch.object(mgr, "_publish_node_update"), \
+             patch.object(mgr, "schedule_node"), \
+             patch.object(mgr, "_schedule_next"):
+            mock_store.save_employee_runtime = AsyncMock()
+
+            await mgr._on_child_complete_inner("00006", entry, project_id="proj-pipe-ok")
+
+        mock_engine.on_task_complete.assert_called_once()
+        mock_engine.on_task_failed.assert_not_called()

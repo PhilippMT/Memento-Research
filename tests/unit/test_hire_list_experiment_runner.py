@@ -28,7 +28,7 @@ def test_experiment_runner_in_hire_list():
 
 def test_experiment_runner_entry_carries_runner_skill():
     """The skill string is the trigger — onboarding._SKILL_REQUIRED_RUNBOOKS
-    keys off `experiment_runner` to inject the autoresearch +
+    keys off `experiment_runner` to inject the experiment-infra +
     execution-runbook skills. If this string drifts, the runbooks won't
     auto-inject and Stage 6 dispatcher will run without its tools."""
     entries = _load()
