@@ -86,9 +86,11 @@ table — if the table is vague, Stage 6 fails.
 - ✅ Dependencies between tasks named (T2 depends on T1, etc.).
 - ✅ Risk register names task IDs, not generic risks.
 - ✅ Coverage: every section in the experiment plan that requires execution has at least one task (procedure, data pipeline, statistical analysis, write-up).
+- ✅ **Remote-execution tasks routed to a runner**: any task that launches code on remote infra (training, sweep, eval on a cluster) has an assignee whose skill column includes `experiment_runner` (which auto-loads the `experiment-infra` runbook). Purely-local tasks (notebook analysis, write-up) are exempt.
 - ❌ Tasks without assignees, or assignees not on the roster.
 - ❌ Acceptance criteria of "done well" or "complete" — must be verifiable.
 - ❌ Missing the assignments file entirely → auto-REJECT.
+- ❌ Remote-execution task assigned to someone without `experiment_runner` → FAIL (Stage 6 won't have the runbook to dispatch from).
 
 ### D11 — Citation of the Debate
 - ✅ At least 2 places where a procedural decision quotes/paraphrases a named participant from the transcript.

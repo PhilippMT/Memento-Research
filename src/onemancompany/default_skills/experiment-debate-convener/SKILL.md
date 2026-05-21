@@ -73,6 +73,16 @@ For experiment design you typically want:
 roster from a prior Stage 4 debate and their skills cover what you need,
 prefer them over hiring new ones. Use `list_colleagues()` first.
 
+**If the experiment will run on remote infra** (compute cluster, SkyPilot,
+GPU pool — anything not purely local), make sure at least one teammate
+carries the `experiment_runner` profile skill. The onboarding system
+auto-injects the `experiment-infra` runbook into anyone with that skill, so
+they can drive the remote API (`fast_query_budget` / `fast_submit` /
+`fast_query_exp_status` / `fast_cancel`) end to end. If nobody on the
+roster has `experiment_runner`, assemble one in Phase 2 Option C now —
+the debate should know what execution infra is available before arguing
+about procedure feasibility.
+
 ---
 
 ## Phase 3: Write the Initial Experiment Plan Draft (v1)
@@ -312,6 +322,14 @@ Save to `stage5_assignments.md`. Format:
   finishes must say so.
 - **Risk register names task IDs.** Risks attached to specific tasks, not
   generic ("things may break").
+- **Remote-execution tasks must use a runner.** If a task launches code on
+  remote infra (training run, sweep, evaluation on the compute cluster),
+  the assignee must carry the `experiment_runner` skill (which auto-injects
+  the `experiment-infra` runbook). The task description should be specific
+  enough that Stage 6 can hand it to `fast_submit.sh` — name the command
+  or YAML, the working dir, and the success metric or stopping condition.
+  Tasks that stay purely local (notebook analysis, paper writing) don't
+  need a runner.
 
 ---
 
