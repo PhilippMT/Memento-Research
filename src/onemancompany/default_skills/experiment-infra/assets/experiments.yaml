@@ -1,4 +1,4 @@
-# experiments.yaml — run the autoresearch nanochat training under experiments/
+# experiments.yaml — run the remote `experiments/` training script (uv run train.py)
 
 name: experiments
 

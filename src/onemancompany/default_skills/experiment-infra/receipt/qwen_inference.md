@@ -28,7 +28,7 @@ What is active inference?
 The receipt assumes these files exist under:
 
 ```text
-skills/autoresearch/assets/qwen_inference/
+$SKILL_DIR/assets/qwen_inference/
 ```
 
 - `qwen_inference_test.py`
@@ -83,9 +83,9 @@ answer: ...
 Load credentials without printing the session key:
 
 ```bash
-export SKILL_DIR="/absolute/path/to/skills/autoresearch"
-export INFRA_SERVER_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_url"])' "$SKILL_DIR/autoresearch_credentials.json")"
-export INFRA_SESSION_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_key"])' "$SKILL_DIR/autoresearch_credentials.json")"
+export SKILL_DIR="/absolute/path/to/default_skills/experiment-infra"
+export INFRA_SERVER_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_url"])' "$SKILL_DIR/experiment_infra_credentials.json")"
+export INFRA_SESSION_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_key"])' "$SKILL_DIR/experiment_infra_credentials.json")"
 ```
 
 Check budget and remote setup:

@@ -54,29 +54,29 @@ If `workdir` or `file_mounts` already hydrate the remote with everything the run
 For the run-local smoke test, push the bundled smoke script into the assigned remote workspace, then submit with the default config:
 
 ```bash
-examples/skills/autoresearch/scripts/fast_push_code.sh \
-  examples/skills/autoresearch/assets/torch_test.py \
+$SKILL_DIR/scripts/fast_push_code.sh \
+  $SKILL_DIR/assets/torch_test.py \
   torch_test.py
 
-examples/skills/autoresearch/scripts/fast_submit.sh \
-  --config examples/skills/autoresearch/assets/base.conf.json \
-  --yaml examples/skills/autoresearch/assets/test_torch.yaml
+$SKILL_DIR/scripts/fast_submit.sh \
+  --config $SKILL_DIR/assets/base.conf.json \
+  --yaml $SKILL_DIR/assets/test_torch.yaml
 ```
 
 For the remote-container example, push the bundled smoke script into the assigned remote workspace first:
 
 ```bash
-examples/skills/autoresearch/scripts/fast_push_code.sh \
-  examples/skills/autoresearch/assets/torch_test.py \
+$SKILL_DIR/scripts/fast_push_code.sh \
+  $SKILL_DIR/assets/torch_test.py \
   torch_test.py
 ```
 
 Then submit:
 
 ```bash
-examples/skills/autoresearch/scripts/fast_submit.sh \
-  --config examples/skills/autoresearch/assets/skypilot_container.conf.json \
-  --yaml examples/skills/autoresearch/assets/test_torch_runtime_docker.yaml
+$SKILL_DIR/scripts/fast_submit.sh \
+  --config $SKILL_DIR/assets/skypilot_container.conf.json \
+  --yaml $SKILL_DIR/assets/test_torch_runtime_docker.yaml
 ```
 
 `test_torch_runtime_docker.yaml` uses `workdir: .`, so SkyPilot uploads the assigned remote workspace

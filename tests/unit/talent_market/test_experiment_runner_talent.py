@@ -37,14 +37,14 @@ class TestExperimentRunnerProfile:
         data = yaml.safe_load((TALENT_DIR / "profile.yaml").read_text(encoding="utf-8"))
         assert "experiment_runner" in data.get("skills", []), (
             "Talent must declare experiment_runner skill so the onboarding "
-            "mapping injects the autoresearch runbook on hire."
+            "mapping injects the experiment-infra runbook on hire."
         )
 
-    def test_system_prompt_references_autoresearch_runbook(self):
+    def test_system_prompt_references_experiment_infra_runbook(self):
         data = yaml.safe_load((TALENT_DIR / "profile.yaml").read_text(encoding="utf-8"))
         template = data.get("system_prompt_template", "")
-        assert "autoresearch" in template, (
-            "System prompt must point the agent at the autoresearch runbook"
+        assert "experiment-infra" in template, (
+            "System prompt must point the agent at the experiment-infra runbook"
         )
         assert "load_skill" in template, (
             "System prompt should tell the agent how to load the runbook"
@@ -103,10 +103,10 @@ class TestExperimentRunnerSkill:
         head = text.split("---", 2)[1]
         assert "name: experiment_runner" in head
 
-    def test_skill_md_points_at_autoresearch_runbook(self):
+    def test_skill_md_points_at_experiment_infra_runbook(self):
         text = self.SKILL.read_text(encoding="utf-8")
-        assert "autoresearch" in text
-        assert 'load_skill("autoresearch")' in text
+        assert "experiment-infra" in text
+        assert 'load_skill("experiment-infra")' in text
 
 
 class TestExperimentRunnerWiring:
@@ -114,7 +114,7 @@ class TestExperimentRunnerWiring:
 
     def test_talent_skill_key_matches_onboarding_mapping(self):
         """The skill key declared in profile.yaml must match the
-        `_SKILL_REQUIRED_RUNBOOKS` key, otherwise autoresearch won't be
+        `_SKILL_REQUIRED_RUNBOOKS` key, otherwise experiment-infra won't be
         injected when the talent is hired."""
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
 
@@ -122,7 +122,7 @@ class TestExperimentRunnerWiring:
         for skill_key in data["skills"]:
             if skill_key == "experiment_runner":
                 assert skill_key in _SKILL_REQUIRED_RUNBOOKS
-                assert "autoresearch" in _SKILL_REQUIRED_RUNBOOKS[skill_key]
+                assert "experiment-infra" in _SKILL_REQUIRED_RUNBOOKS[skill_key]
                 return
         assert False, "experiment_runner skill key not in profile.yaml"
 

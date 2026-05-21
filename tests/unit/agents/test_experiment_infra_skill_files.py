@@ -1,4 +1,4 @@
-"""Sanity tests for the bundled `autoresearch` default skill.
+"""Sanity tests for the bundled `experiment-infra` default skill.
 
 Validates that the skill folder ships with the expected file layout,
 frontmatter, scripts, and that no real credentials leaked into the
@@ -13,20 +13,20 @@ from pathlib import Path
 
 
 SKILLS_ROOT = Path(__file__).resolve().parents[3] / "src" / "onemancompany" / "default_skills"
-AUTORESEARCH = SKILLS_ROOT / "autoresearch"
+EXPERIMENT_INFRA = SKILLS_ROOT / "experiment-infra"
 EXP_CONVENER = SKILLS_ROOT / "experiment-debate-convener" / "SKILL.md"
 EXP_CRITIC = SKILLS_ROOT / "experiment-quality-critic" / "SKILL.md"
 
 
-class TestAutoresearchLayout:
+class TestExperimentInfraLayout:
     def test_skill_folder_exists(self):
-        assert AUTORESEARCH.exists(), "autoresearch skill folder must ship under default_skills/"
+        assert EXPERIMENT_INFRA.exists(), "experiment-infra skill folder must ship under default_skills/"
 
     def test_skill_md_frontmatter(self):
-        text = (AUTORESEARCH / "SKILL.md").read_text(encoding="utf-8")
+        text = (EXPERIMENT_INFRA / "SKILL.md").read_text(encoding="utf-8")
         assert text.startswith("---\n"), "SKILL.md must open with YAML frontmatter"
         head = text.split("---", 2)[1]
-        assert "name: autoresearch" in head
+        assert "name: experiment-infra" in head
         assert "description:" in head
         assert "allowed-tools:" in head
 
@@ -41,22 +41,22 @@ class TestAutoresearchLayout:
             "fast_cancel.sh",
             "fast_cancel_all_running.sh",
         }
-        present = {p.name for p in (AUTORESEARCH / "scripts").iterdir() if p.is_file()}
+        present = {p.name for p in (EXPERIMENT_INFRA / "scripts").iterdir() if p.is_file()}
         missing = expected - present
-        assert not missing, f"Missing autoresearch scripts: {missing}"
+        assert not missing, f"Missing experiment-infra scripts: {missing}"
 
     def test_scripts_are_executable(self):
-        for script in (AUTORESEARCH / "scripts").glob("*.sh"):
+        for script in (EXPERIMENT_INFRA / "scripts").glob("*.sh"):
             mode = script.stat().st_mode
             assert mode & stat.S_IXUSR, f"{script.name} is missing the user-exec bit"
 
     def test_references_present(self):
-        assert (AUTORESEARCH / "references" / "exp-configuration.md").exists()
-        assert (AUTORESEARCH / "references" / "runtime_images.json").exists()
+        assert (EXPERIMENT_INFRA / "references" / "exp-configuration.md").exists()
+        assert (EXPERIMENT_INFRA / "references" / "runtime_images.json").exists()
 
     def test_runtime_images_is_valid_json(self):
         data = json.loads(
-            (AUTORESEARCH / "references" / "runtime_images.json").read_text(encoding="utf-8")
+            (EXPERIMENT_INFRA / "references" / "runtime_images.json").read_text(encoding="utf-8")
         )
         assert isinstance(data, dict)
         assert "images" in data or "default_image" in data, (
@@ -64,58 +64,58 @@ class TestAutoresearchLayout:
         )
 
     def test_qwen_walkthrough_present(self):
-        assert (AUTORESEARCH / "receipt" / "qwen_inference.md").exists()
+        assert (EXPERIMENT_INFRA / "receipt" / "qwen_inference.md").exists()
 
     def test_no_pycache_or_dsstore_leaked(self):
-        for root, dirs, files in os.walk(AUTORESEARCH):
+        for root, dirs, files in os.walk(EXPERIMENT_INFRA):
             assert "__pycache__" not in dirs, f"__pycache__ leaked under {root}"
             assert ".DS_Store" not in files, f".DS_Store leaked under {root}"
 
 
-class TestAutoresearchCredentialSafety:
+class TestExperimentInfraCredentialSafety:
     """Real session keys must never enter the repo; only the .example file ships."""
 
     def test_example_credentials_shipped(self):
-        ex = AUTORESEARCH / "autoresearch_credentials.example.json"
+        ex = EXPERIMENT_INFRA / "experiment_infra_credentials.example.json"
         assert ex.exists(), "example credentials file must ship so users know the schema"
         data = json.loads(ex.read_text(encoding="utf-8"))
         assert set(data.keys()) == {"server_url", "session_key"}
 
     def test_example_credentials_are_placeholders(self):
         data = json.loads(
-            (AUTORESEARCH / "autoresearch_credentials.example.json").read_text(encoding="utf-8")
+            (EXPERIMENT_INFRA / "experiment_infra_credentials.example.json").read_text(encoding="utf-8")
         )
         # Placeholder values — never a real session key like ``vk_<name>_<hex>``.
         assert "YOUR" in data["server_url"] or "EXAMPLE" in data["server_url"].upper()
         assert "REPLACE" in data["session_key"].upper() or "EXAMPLE" in data["session_key"].upper()
 
     def test_real_credentials_file_absent(self):
-        real = AUTORESEARCH / "autoresearch_credentials.json"
+        real = EXPERIMENT_INFRA / "experiment_infra_credentials.json"
         assert not real.exists(), (
-            "autoresearch_credentials.json must stay gitignored — real keys leaked into repo"
+            "experiment_infra_credentials.json must stay gitignored — real keys leaked into repo"
         )
 
     def test_gitignore_covers_real_credentials(self):
         repo_root = Path(__file__).resolve().parents[3]
         gi = (repo_root / ".gitignore").read_text(encoding="utf-8")
-        assert "autoresearch/autoresearch_credentials.json" in gi, (
-            ".gitignore must list the autoresearch real-credentials file"
+        assert "experiment-infra/experiment_infra_credentials.json" in gi, (
+            ".gitignore must list the experiment-infra real-credentials file"
         )
 
 
-class TestStage5WiringToAutoresearch:
-    """Stage 5 SKILL.md files must mention the runner/autoresearch path
+class TestStage5WiringToExperimentInfra:
+    """Stage 5 SKILL.md files must mention the runner / experiment-infra path
     so the producer + critic know remote-execution tasks need a runner."""
 
     def test_convener_mentions_experiment_runner_in_team_assembly(self):
         text = EXP_CONVENER.read_text(encoding="utf-8")
         assert "experiment_runner" in text
-        assert "autoresearch" in text
+        assert "experiment-infra" in text
 
     def test_convener_coordination_rules_require_runner_for_remote_tasks(self):
         text = EXP_CONVENER.read_text(encoding="utf-8")
         assert "fast_submit.sh" in text, (
-            "Coordination rules should name the autoresearch script so Stage 6 "
+            "Coordination rules should name the experiment-infra script so Stage 6 "
             "knows the assignment format for remote-execution tasks"
         )
 

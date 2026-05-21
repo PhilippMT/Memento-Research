@@ -1,13 +1,13 @@
 ---
 name: experiment_runner
-description: Marker skill for the Experiment Runner talent. Real workflow lives in the `autoresearch` runbook, which the platform auto-injects on hire.
+description: Marker skill for the Experiment Runner talent. Real workflow lives in the `experiment-infra` runbook, which the platform auto-injects on hire.
 ---
 
 # experiment_runner — marker skill
 
 Carrying this skill tells the platform two things:
 
-1. This employee should auto-receive the `autoresearch` runbook on hire
+1. This employee should auto-receive the `experiment-infra` runbook on hire
    (handled by `_SKILL_REQUIRED_RUNBOOKS["experiment_runner"]` in
    `src/onemancompany/agents/onboarding.py`).
 2. Stage 5 (`experiment-debate-convener`) and Stage 6 dispatch logic can
@@ -16,10 +16,10 @@ Carrying this skill tells the platform two things:
 
 ## How to actually drive remote experiments
 
-Use the `autoresearch` runbook for everything operational:
+Use the `experiment-infra` runbook for everything operational:
 
 ```text
-load_skill("autoresearch")
+load_skill("experiment-infra")
 ```
 
 That returns the bundled SKILL.md plus the `fast_*.sh` scripts under

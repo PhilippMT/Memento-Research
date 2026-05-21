@@ -257,10 +257,10 @@ talent-template-*/
 # Tileset source assets (full packs, not redistributable)
 /assets/
 
-# autoresearch real credentials (only the .example.json file is checked in)
-src/onemancompany/default_skills/autoresearch/autoresearch_credentials.json
-company/human_resource/employees/*/skills/autoresearch/autoresearch_credentials.json
-company/human_resource/ex-employees/*/skills/autoresearch/autoresearch_credentials.json
+# experiment-infra real credentials (only the .example.json file is checked in)
+src/onemancompany/default_skills/experiment-infra/experiment_infra_credentials.json
+company/human_resource/employees/*/skills/experiment-infra/experiment_infra_credentials.json
+company/human_resource/ex-employees/*/skills/experiment-infra/experiment_infra_credentials.json
 
 # Local PR notes / scratch workspace
 PR_1on1_history_update.md

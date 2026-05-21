@@ -79,7 +79,7 @@ _EA_SKILL_NAMES = ["project-brainstorming"]
 _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
     "methodology_designer": ["methodology-debate-convener"],
     "experiment_designer": ["experiment-debate-convener"],
-    "experiment_runner": ["autoresearch"],
+    "experiment_runner": ["experiment-infra"],
     "adversarial_review": [
         "methodology-quality-critic",
         "experiment-quality-critic",

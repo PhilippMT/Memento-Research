@@ -1,8 +1,8 @@
 # Remote SkyPilot container runtime smoke test.
 #
 # User-side prereq: torch_test.py exists in the assigned remote workspace. The bundled sample can be pushed with:
-#   examples/skills/autoresearch/scripts/fast_push_code.sh \
-#     examples/skills/autoresearch/assets/torch_test.py torch_test.py
+#   $SKILL_DIR/scripts/fast_push_code.sh \
+#     $SKILL_DIR/assets/torch_test.py torch_test.py
 
 name: test-torch-runtime-docker
 

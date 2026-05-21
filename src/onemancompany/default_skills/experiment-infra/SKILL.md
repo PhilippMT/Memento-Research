@@ -1,10 +1,10 @@
 ---
-name: autoresearch
-description: Drive the user's remote experiment API over HTTP — check budget, inspect remote setup and working directory, push code, submit jobs, poll run status, cancel runs. Use whenever the user mentions remote experiments, API jobs, SkyPilot YAML, a `run_id`, `INFRA_SERVER_URL` / `INFRA_SESSION_KEY`, or any `fast_*` script bundled here. Not for purely local training with no remote API.
+name: experiment-infra
+description: Drive the lab's remote experiment infra API over HTTP — check budget, inspect remote setup and working directory, push code, submit jobs, poll run status, cancel runs. Use whenever the user mentions remote experiments, API jobs, SkyPilot YAML, a `run_id`, `INFRA_SERVER_URL` / `INFRA_SESSION_KEY`, or any `fast_*` script bundled here. Not for purely local training with no remote API.
 allowed-tools: Bash, Read, Write
 ---
 
-# Autoresearch — remote experiment lifecycle
+# experiment-infra — remote experiment lifecycle
 
 This skill manages experiments on the user's infra API using bundled bash scripts (curl + tar + python3 stdlib). Compose them into whatever workflow the user asks for; each script also runs standalone.
 
@@ -31,13 +31,13 @@ For one-off queries (just budget, just status, just cancel), run the relevant sc
 
 All scripts read `INFRA_SERVER_URL` and `INFRA_SESSION_KEY` from the environment, or accept per-call `--url` / `--key` overrides.
 
-If both env vars are unset, hydrate them from `$SKILL_DIR/autoresearch_credentials.json` before running any script. **The real credentials file is gitignored** — only `autoresearch_credentials.example.json` ships with the skill. To activate, copy the example to `autoresearch_credentials.json` in the same directory and fill in the real `server_url` and `session_key`:
+If both env vars are unset, hydrate them from `$SKILL_DIR/experiment_infra_credentials.json` before running any script. **The real credentials file is gitignored** — only `experiment_infra_credentials.example.json` ships with the skill. To activate, copy the example to `experiment_infra_credentials.json` in the same directory and fill in the real `server_url` and `session_key`:
 
 ```bash
-cp "$SKILL_DIR/autoresearch_credentials.example.json" "$SKILL_DIR/autoresearch_credentials.json"
-# edit autoresearch_credentials.json with the real values, then:
-export INFRA_SERVER_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_url"])' "$SKILL_DIR/autoresearch_credentials.json")"
-export INFRA_SESSION_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_key"])' "$SKILL_DIR/autoresearch_credentials.json")"
+cp "$SKILL_DIR/experiment_infra_credentials.example.json" "$SKILL_DIR/experiment_infra_credentials.json"
+# edit experiment_infra_credentials.json with the real values, then:
+export INFRA_SERVER_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_url"])' "$SKILL_DIR/experiment_infra_credentials.json")"
+export INFRA_SESSION_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_key"])' "$SKILL_DIR/experiment_infra_credentials.json")"
 ```
 
 If neither the env vars nor the JSON file are usable, **stop and ask the user** — never guess a URL or key, and never echo `INFRA_SESSION_KEY` into chat output or commits.
@@ -142,7 +142,7 @@ For `fast_push_code.sh`, prefer absolute `LOCAL_PATH` values. If you pass a rela
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| `remote API URL is required` / `session key is required` | Missing env vars and unusable JSON. | Export env vars, fix `autoresearch_credentials.json`, or pass `--url` / `--key`. |
+| `remote API URL is required` / `session key is required` | Missing env vars and unusable JSON. | Export env vars, fix `experiment_infra_credentials.json`, or pass `--url` / `--key`. |
 | Push path error from API | `REMOTE_DEST` falls outside the assigned upload/workspace root. | Re-run push using the directory named in the API error message. |
 | `rejected` on submit | Budget or YAML/JSON validation failed. | Run `fast_query_budget.sh` and adjust limits or config. |
 | `fast_submit.sh: set run_command or yaml_path...` | Submit invoked with no command path. | Pass `--yaml` or `-c "CMD"`, or set `run_command` / `yaml_path` in the config JSON. |
