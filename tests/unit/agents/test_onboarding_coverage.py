@@ -641,3 +641,33 @@ class TestExperimentInfraRunbook:
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
         assert "experiment_runner" in _SKILL_REQUIRED_RUNBOOKS
         assert "experiment-infra" in _SKILL_REQUIRED_RUNBOOKS["experiment_runner"]
+
+    def test_experiment_runner_also_gets_execution_runbook(self):
+        """Stage 6 needs both runbooks on the runner — experiment-infra for the
+        HTTP API and experiment-execution-runbook for the assignments-table
+        dispatch logic. One without the other leaves a gap."""
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment-execution-runbook" in _SKILL_REQUIRED_RUNBOOKS["experiment_runner"]
+
+    def test_experiment_runner_gets_both_runbooks_at_inject_time(self, tmp_path, monkeypatch):
+        """End-to-end: a fresh hire with `experiment_runner` skill must end
+        up with both experiment-infra/ and experiment-execution-runbook/ in
+        their skills/ directory after onboarding."""
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "experiment-infra", "experiment-execution-runbook"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+
+        emp_dir = tmp_path / "00400"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- experiment_runner\nname: ExpRunner\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00400")
+
+        assert (skills_dir / "experiment-infra" / "SKILL.md").exists()
+        assert (skills_dir / "experiment-execution-runbook" / "SKILL.md").exists()

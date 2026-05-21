@@ -294,3 +294,4 @@ scripts/test_memento_agent_corpus.py
 tests/integration/test_memento_e2e.py
 tests/integration/__init__.py
 tests/fixtures/memento_e2e_corpus.yaml
+logs/
