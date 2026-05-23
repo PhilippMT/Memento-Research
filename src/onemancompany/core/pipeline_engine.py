@@ -525,6 +525,21 @@ class PipelineEngine:
         if self.phase == "producer":
             # Producer finished → store result, dispatch critic
             stage = self._stage_def()
+            # Stage 3 (literature-conflict-graph) deliverable is the FILE the
+            # aigraph tool writes (`# Selected Hypotheses` report). The agent's
+            # chat result is often just a summary, which the UI can't render as
+            # a conflict graph — so prefer the file content as the stage result
+            # (the critic reads the file too, keeping them consistent).
+            if stage["id"] == 3:
+                from pathlib import Path
+                deliverable = Path(self.project_dir) / f"stage3_{stage['skill']}.md"
+                try:
+                    if deliverable.exists():
+                        file_text = deliverable.read_text(encoding="utf-8").strip()
+                        if "# Selected Hypotheses" in file_text:
+                            result = file_text
+                except Exception as e:
+                    logger.debug("[PIPELINE] Stage 3 file-content fallback failed: {}", e)
             self.state["stage_results"][str(stage["id"])] = result
             self._save()
             logger.info("[PIPELINE] Stage {} producer complete, dispatching critic", stage["id"])
