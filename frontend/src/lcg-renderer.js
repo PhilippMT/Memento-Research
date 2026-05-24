@@ -116,7 +116,9 @@ export function parseLcgOutput(text) {
       anomalies.push(_parseAnomaly(anomMatch[1], anomMatch[2], sec.body));
       continue;
     }
-    const hypMatch = sec.heading.match(/^(h\d+)\s*[—\-–]\s*(.+)$/);
+    // h\d+ = critic (conflict-explanation) ids; a\d+#cr\d+ = creator (new-method
+    // proposal) ids — both render as hypothesis cards.
+    const hypMatch = sec.heading.match(/^(h\d+|a\d+#cr\d+)\s*[—\-–]\s*(.+)$/);
     if (hypMatch) {
       hypotheses.push(_parseHypothesis(hypMatch[1], hypMatch[2].trim(), sec.body));
     }
