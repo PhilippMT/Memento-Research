@@ -166,11 +166,28 @@ def reset_session(employee_id: str, project_id: str) -> None:
     this before dispatch keeps each stage's conversation bounded.
 
     Sync + best-effort: removes the daemon from the registry (a later
-    get_daemon will spawn a fresh process) and clears the stored session_id.
-    A still-running old daemon process is left to exit on its own.
+    get_daemon will spawn a fresh process), terminates the old daemon's
+    subprocess so it doesn't leak (each pipeline stage calls this, so leaving
+    the persistent ``claude`` process running would accumulate one orphan per
+    stage), and clears the stored session_id.
     """
     key = f"{employee_id}:{project_id}"
-    _daemons.pop(key, None)
+    daemon = _daemons.pop(key, None)
+    if daemon is not None:
+        # Kill the old persistent process. Sync SIGTERM (asyncio's child watcher
+        # reaps it); we intentionally do NOT touch the running-pid / session-lock
+        # files here, because a fresh daemon for the same key is spawned right
+        # after this call and owns them — clearing them async would race it.
+        task = getattr(daemon, "_stderr_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        proc = getattr(daemon, "proc", None)
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+        daemon.proc = None
     sessions = _load_sessions(employee_id)
     if project_id in sessions:
         del sessions[project_id]
