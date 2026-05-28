@@ -31,7 +31,12 @@ def test_state_round_trip_and_registry_reload(tmp_path):
 
     engine = pe.get_or_load_pipeline("p1", str(tmp_path))
     assert engine is pe.get_pipeline("p1")
-    assert engine.state == state
+    assert engine.state["topic"] == state["topic"]
+    assert engine.state["current_stage"] == state["current_stage"]
+    assert engine.state["phase"] == state["phase"]
+    assert engine.state["memory_retrievals"] == {}
+    assert engine.state["memory_episodes"] == {}
+    assert engine.state["memory_feedback"] == {}
 
     assert pe.get_or_load_pipeline("p1", str(tmp_path)) is engine
 
@@ -158,6 +163,34 @@ def test_dispatch_producer_without_pending_feedback_unchanged(tmp_path, monkeypa
     assert "Direct guidance from CEO" not in desc
     assert "pending_user_feedback" not in engine.state or engine.state.get("pending_user_feedback", "") == ""
 
+def test_dispatch_producer_injects_research_memory_guidance(tmp_path, monkeypatch):
+    dispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic" if skill == "topic_refiner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+
+    store = pe.ResearchMemoryStore("p1", str(tmp_path))
+    store.record_stage_episode(
+        topic="graph RAG",
+        stage=pe.STAGES[0],
+        producer_result="Refine graph RAG topic into a concrete benchmarkable claim.",
+        critic_result="PASS confidence: 0.9. Clear scope and measurable criteria.",
+        passed=True,
+        confidence=0.9,
+        retries=0,
+        reward=0.9,
+        outcome="critic_pass",
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "graph RAG")
+    engine._dispatch_producer()
+
+    assert "--- Retrieved Research Memory ---" in dispatched[0][1]
+    assert "Useful prior memories" in dispatched[0][1]
+    assert engine.state["memory_retrievals"]["1"]["ids"]
+
 
 def test_dispatch_to_employee_uses_ea_child_as_parent_and_schedules(tmp_path, monkeypatch):
     scheduled = []
@@ -225,6 +258,24 @@ def test_critic_completion_pass_moves_to_gate(tmp_path, monkeypatch):
     assert critic_events == [((1, "PASS\nConfidence Score: 0.82", True, 0.82), {})]
     assert stage_events == [(("stage_complete", 1), {"confidence": 0.82})]
     assert gate_events == [((1, 0.82), {})]
+
+
+def test_critic_completion_records_research_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {"1": "producer output"}
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.82")
+
+    store = pe.ResearchMemoryStore("p1", str(tmp_path))
+    records = store._read_records()
+    assert len(records) == 1
+    assert records[0]["outcome"] == "critic_pass"
+    assert records[0]["reward"] == 0.82
+    assert engine.state["memory_episodes"]["1"] == records[0]["id"]
 
 
 def test_critic_reject_retries_with_feedback(tmp_path, monkeypatch):
@@ -318,6 +369,31 @@ def test_ceo_approval_revision_advance_and_complete(tmp_path, monkeypatch):
     assert engine.phase == "done"
     assert completed == ["p1"]
 
+def test_ceo_revision_updates_research_memory_feedback(tmp_path, monkeypatch):
+    producer_feedback = []
+
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": producer_feedback.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["stage_results"] = {"1": "producer output"}
+    memory_id = engine._record_stage_memory(
+        pe.STAGES[0],
+        producer_result="producer output",
+        critic_result="PASS confidence: 0.8",
+        passed=True,
+        confidence=0.8,
+        outcome="critic_pass",
+    )
+
+    engine.on_ceo_approve("please REVISE with stricter scope")
+
+    store = pe.ResearchMemoryStore("p1", str(tmp_path))
+    records = {record["id"]: record for record in store._read_records()}
+    assert producer_feedback == ["please REVISE with stricter scope"]
+    assert records[memory_id]["ceo_approved"] is False
+    assert records[memory_id]["reward"] < 0.8
+    assert engine.state["memory_feedback"]["1"]["episode_id"] == memory_id
+
 
 @pytest.mark.parametrize("feedback,expect_revise", [
     # advance-with-comment chats that must NOT trigger a redo
@@ -337,7 +413,6 @@ def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedbac
     trigger a redo on otherwise benign CEO chat. Explicit multi-char redo
     triggers should fire."""
     redispatched = []
-    advanced = []
 
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append((self.current_stage, feedback)))
     monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: None)
