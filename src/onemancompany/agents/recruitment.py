@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field
 from typing import Literal
 from loguru import logger
 
+from onemancompany.core import config as _config
 from onemancompany.core import store as _store
-from onemancompany.core.config import load_app_config
 from onemancompany.core.models import EventType, HostingMode
 
 # --- Pydantic models (migrated from talent_market/boss_online.py) ---
@@ -401,7 +401,7 @@ class TalentMarketClient:
             use_ai: Override AI search setting. None = read from config.
         """
         if use_ai is None:
-            use_ai = load_app_config().get("talent_market", {}).get("use_ai_search", False)
+            use_ai = _config.settings.talent_market_use_ai_search
         return await self._call("search_candidates", job_description=job_description, use_ai=use_ai)
 
     async def list_available(self, role: str = "", skills: str = "", page: int = 1, page_size: int = 20) -> dict:
@@ -436,11 +436,19 @@ talent_market = TalentMarketClient()
 
 
 async def start_talent_market() -> None:
-    """Connect to the Talent Market MCP server using config.yaml settings."""
-    tm_config = load_app_config().get("talent_market", {})
-    logger.debug("[recruitment] talent_market config: {}", {k: v[:8] + "..." if k == "api_key" and v else v for k, v in tm_config.items()})
-    url = tm_config.get("url", "https://api.one-man-company.com/mcp/sse")
-    api_key = tm_config.get("api_key", "")
+    """Connect to the Talent Market MCP server using .env settings."""
+    settings = _config.settings
+    url = settings.talent_market_url
+    api_key = settings.talent_market_api_key
+    logger.debug(
+        "[recruitment] talent_market config: {}",
+        {
+            "url": url,
+            "api_key": api_key[:8] + "..." if api_key else "",
+            "use_ai_search": settings.talent_market_use_ai_search,
+            "mode": settings.talent_market_mode,
+        },
+    )
     if not api_key:
         logger.warning("Talent Market API key not configured — skipping connection")
         return
@@ -514,8 +522,7 @@ async def search_candidates(job_description: str) -> dict:
     """
     global _last_session_id
 
-    tm_config = load_app_config().get("talent_market", {})
-    tm_mode = tm_config.get("mode", "local")
+    tm_mode = _config.settings.talent_market_mode
 
     logger.debug("[recruitment] search_candidates called, mode={}, talent_market.connected={}", tm_mode, talent_market.connected)
     from_market = False
@@ -531,7 +538,7 @@ async def search_candidates(job_description: str) -> dict:
             if err_msg:
                 logger.warning("[recruitment] Talent Market returned error: {}", err_msg)
                 # Fallback: retry without AI search if it was enabled
-                use_ai = tm_config.get("use_ai_search", False)
+                use_ai = _config.settings.talent_market_use_ai_search
                 if use_ai:
                     logger.info("[recruitment] Retrying without AI search...")
                     grouped = await talent_market.search(job_description, use_ai=False)

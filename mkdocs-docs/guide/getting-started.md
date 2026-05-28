@@ -98,8 +98,7 @@ Stops the running service and deletes the entire installation directory. Require
 
 | File | Purpose |
 | --- | --- |
-| `.onemancompany/.env` | API keys (OpenRouter, Anthropic, etc.) |
-| `.onemancompany/config.yaml` | App config (Talent Market URL, etc.) |
+| `.onemancompany/.env` | API keys and app config |
 | Browser Settings panel | Frontend preferences |
 
 ## Next Steps

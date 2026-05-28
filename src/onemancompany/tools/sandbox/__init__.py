@@ -2,7 +2,7 @@
 
 Provides LangChain @tool functions for executing code, running commands,
 and managing files inside an isolated sandbox container.
-The sandbox server is managed as a subprocess, controlled by config.yaml.
+The sandbox server is managed as a subprocess, controlled by .env settings.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from langchain_core.tools import tool
 
-from onemancompany.core.config import load_app_config
+from onemancompany.core import config as _config
 
 # ---------------------------------------------------------------------------
 # Config
@@ -32,16 +32,14 @@ _CONFIG_DEFAULTS = {
 
 
 def load_sandbox_config() -> dict:
-    """Read sandbox config from the project-level config.yaml (``tools.sandbox`` section).
-
-    Missing keys fall back to ``_CONFIG_DEFAULTS`` so callers never need
-    their own fallback values.
-    """
-    app_cfg = load_app_config()
-    data = app_cfg.get("tools", {}).get("sandbox", {}) or {}
-    defaults = dict(_CONFIG_DEFAULTS)
-    defaults.update(data)
-    return defaults
+    """Read sandbox config from .env-backed settings."""
+    settings = _config.settings
+    return {
+        "enabled": settings.sandbox_enabled,
+        "server_url": settings.sandbox_server_url,
+        "default_image": settings.sandbox_default_image,
+        "timeout_seconds": settings.sandbox_timeout_seconds,
+    }
 
 
 def is_sandbox_enabled() -> bool:
@@ -67,7 +65,7 @@ _server_process: subprocess.Popen | None = None
 def start_sandbox_server() -> None:
     """Start opensandbox-server as a subprocess if enabled.
 
-    Only starts if ``enabled: true`` in config.yaml. Stores the process
+    Only starts if ``SANDBOX_ENABLED=true``. Stores the process
     handle in a module-level variable for later cleanup.
     """
     global _server_process
@@ -224,7 +222,7 @@ def _collect_output(logs: Any) -> tuple[str, str]:
 
 _DISABLED_RESPONSE = {
     "status": "disabled",
-    "message": "Sandbox module is not enabled. Set enabled: true in config.yaml",
+    "message": "Sandbox module is not enabled. Set SANDBOX_ENABLED=true in .env",
 }
 
 _SERVER_ERROR_RESPONSE = {

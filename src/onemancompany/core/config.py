@@ -155,7 +155,14 @@ ENV_KEY_DEFAULT_MODEL = "DEFAULT_LLM_MODEL"
 ENV_KEY_HOST = "HOST"
 ENV_KEY_PORT = "PORT"
 ENV_KEY_SANDBOX_ENABLED = "SANDBOX_ENABLED"
+ENV_KEY_SANDBOX_SERVER_URL = "SANDBOX_SERVER_URL"
+ENV_KEY_SANDBOX_DEFAULT_IMAGE = "SANDBOX_DEFAULT_IMAGE"
+ENV_KEY_SANDBOX_TIMEOUT_SECONDS = "SANDBOX_TIMEOUT_SECONDS"
 ENV_KEY_ANTHROPIC_AUTH = "ANTHROPIC_AUTH_METHOD"
+ENV_KEY_HOT_RELOAD = "HOT_RELOAD"
+ENV_KEY_TALENT_MARKET_URL = "TALENT_MARKET_URL"
+ENV_KEY_TALENT_MARKET_USE_AI_SEARCH = "TALENT_MARKET_USE_AI_SEARCH"
+ENV_KEY_TALENT_MARKET_MODE = "TALENT_MARKET_MODE"
 
 # Provider name constants
 PROVIDER_OPENROUTER = "openrouter"
@@ -596,6 +603,21 @@ class Settings(BaseSettings):
     # the parent director is held until CEO approves.
     pipeline_breakpoints: str = "3,9"
 
+    # Runtime feature toggles
+    hot_reload: bool = True
+
+    # OpenSandbox
+    sandbox_enabled: bool = False
+    sandbox_server_url: str = "http://localhost:8080"
+    sandbox_default_image: str = "opensandbox/code-interpreter:v1.0.1"
+    sandbox_timeout_seconds: int = 120
+
+    # Talent Market
+    talent_market_url: str = "https://api.one-man-company.com/mcp/sse"
+    talent_market_api_key: str = ""
+    talent_market_use_ai_search: bool = False
+    talent_market_mode: str = "local"
+
 
 settings = Settings()
 
@@ -662,41 +684,49 @@ def sync_founding_defaults(provider: str, model: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Application config (config.yaml at project root)
+# Application config compatibility
 # ---------------------------------------------------------------------------
-APP_CONFIG_PATH = DATA_ROOT / "config.yaml"
 
-# Cached in-memory copy — read once at import, refreshed by reload_app_config()
-_app_config: dict = {}
+# Backward-compatible name for code/tests that watch the runtime config file.
+# Configuration now lives in .env, not config.yaml.
+APP_CONFIG_PATH = DATA_ROOT / DOT_ENV_FILENAME
 
 
-def _read_app_config_from_disk() -> dict:
-    """Read config.yaml from disk. Returns empty dict if missing."""
-    if not APP_CONFIG_PATH.exists():
-        return {}
-    with open_utf(APP_CONFIG_PATH) as f:
-        return yaml.safe_load(f) or {}
+def _settings_to_app_config() -> dict:
+    """Return legacy app-config shape from the .env-backed Settings object."""
+    return {
+        "hot_reload": settings.hot_reload,
+        "tools": {
+            "sandbox": {
+                "enabled": settings.sandbox_enabled,
+                "server_url": settings.sandbox_server_url,
+                "default_image": settings.sandbox_default_image,
+                "timeout_seconds": settings.sandbox_timeout_seconds,
+            }
+        },
+        "talent_market": {
+            "url": settings.talent_market_url,
+            "api_key": settings.talent_market_api_key,
+            "use_ai_search": settings.talent_market_use_ai_search,
+            "mode": settings.talent_market_mode,
+        },
+    }
 
 
 def load_app_config() -> dict:
-    """Return the cached application config (call reload_app_config() to refresh)."""
-    return _app_config
+    """Return application config using .env as the single source of truth."""
+    return _settings_to_app_config()
 
 
 def reload_app_config() -> dict:
-    """Re-read config.yaml from disk into the in-memory cache. Returns the new config."""
-    global _app_config
-    _app_config = _read_app_config_from_disk()
-    return _app_config
+    """Refresh .env settings and return the legacy app-config shape."""
+    reload_settings()
+    return load_app_config()
 
 
 def is_hot_reload_enabled() -> bool:
-    """Check whether config hot-reload is enabled."""
-    return bool(_app_config.get("hot_reload", False))
-
-
-# Load once at import time
-_app_config = _read_app_config_from_disk()
+    """Check whether hot-reload is enabled."""
+    return bool(settings.hot_reload)
 
 
 def load_employee_configs() -> dict[str, EmployeeConfig]:

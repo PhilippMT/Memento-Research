@@ -25,7 +25,7 @@ class TaskContract(BaseModel):
     assigned_agent: str = ""
     allowed_tools: list[str] = []
     protected_paths: list[str] = Field(
-        default_factory=lambda: [".env", "config.yaml", "company/human_resource/"]
+        default_factory=lambda: [".env", "company/human_resource/"]
     )
 
     # Guardrails

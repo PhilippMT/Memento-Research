@@ -205,13 +205,30 @@ class TestTalentMarketClient:
         from onemancompany.agents import recruitment
         from onemancompany.agents.recruitment import TalentMarketClient
 
-        monkeypatch.setattr(recruitment, "load_app_config", lambda: {"talent_market": {}})
+        monkeypatch.setattr(recruitment._config, "settings", MagicMock(talent_market_use_ai_search=False))
         client = TalentMarketClient()
         client._call = AsyncMock(return_value={"roles": []})
 
         result = await client.search("python dev")
         client._call.assert_awaited_once_with("search_candidates", job_description="python dev", use_ai=False)
         assert result == {"roles": []}
+
+    @pytest.mark.asyncio
+    async def test_start_talent_market_uses_env_settings(self, monkeypatch):
+        from onemancompany.agents import recruitment
+
+        monkeypatch.setattr(
+            recruitment._config,
+            "settings",
+            MagicMock(talent_market_url="https://talent.example/sse", talent_market_api_key="tm-secret"),
+        )
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock()
+        monkeypatch.setattr(recruitment, "talent_market", mock_client)
+
+        await recruitment.start_talent_market()
+
+        mock_client.connect.assert_awaited_once_with("https://talent.example/sse", "tm-secret")
 
     @pytest.mark.asyncio
     async def test_hire(self):
@@ -300,8 +317,14 @@ class TestStartStopTalentMarket:
         from onemancompany.agents import recruitment
 
         monkeypatch.setattr(
-            recruitment, "load_app_config",
-            lambda: {"talent_market": {"url": "http://test", "api_key": ""}},
+            recruitment._config,
+            "settings",
+            MagicMock(
+                talent_market_url="http://test",
+                talent_market_api_key="",
+                talent_market_use_ai_search=False,
+                talent_market_mode="local",
+            ),
         )
         # Reset singleton state
         recruitment.talent_market._session = None
@@ -330,10 +353,7 @@ class TestSearchCandidates:
     async def test_returns_candidates_from_talent_market(self, monkeypatch):
         from onemancompany.agents import recruitment
 
-        monkeypatch.setattr(
-            recruitment, "load_app_config",
-            lambda: {"talent_market": {"mode": "remote"}},
-        )
+        monkeypatch.setattr(recruitment._config, "settings", MagicMock(talent_market_mode="remote", talent_market_use_ai_search=False))
 
         fake_result = {
             "type": "individual",
@@ -429,10 +449,7 @@ class TestSessionIdTracking:
         """search_candidates stashes session_id from API response."""
         from onemancompany.agents import recruitment
 
-        monkeypatch.setattr(
-            recruitment, "load_app_config",
-            lambda: {"talent_market": {"mode": "remote"}},
-        )
+        monkeypatch.setattr(recruitment._config, "settings", MagicMock(talent_market_mode="remote", talent_market_use_ai_search=False))
 
         fake_result = {
             "type": "individual",
@@ -523,10 +540,7 @@ class TestSearchPassesUseAi:
             return {"roles": [], "session_id": ""}
 
         monkeypatch.setattr(recruitment.TalentMarketClient, "_call", fake_call)
-        monkeypatch.setattr(
-            "onemancompany.agents.recruitment.load_app_config",
-            lambda: {"talent_market": {"use_ai_search": True}},
-        )
+        monkeypatch.setattr(recruitment._config, "settings", MagicMock(talent_market_use_ai_search=True))
 
         client = recruitment.TalentMarketClient()
         await client.search("need a python dev")
@@ -544,10 +558,7 @@ class TestSearchPassesUseAi:
             return {"roles": [], "session_id": ""}
 
         monkeypatch.setattr(recruitment.TalentMarketClient, "_call", fake_call)
-        monkeypatch.setattr(
-            "onemancompany.agents.recruitment.load_app_config",
-            lambda: {"talent_market": {}},
-        )
+        monkeypatch.setattr(recruitment._config, "settings", MagicMock(talent_market_use_ai_search=False))
 
         client = recruitment.TalentMarketClient()
         await client.search("need a python dev")

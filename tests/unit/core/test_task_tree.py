@@ -510,7 +510,7 @@ class TestTaskNodeContentExternalization:
         assert node._content_loaded is True
         assert node.description == ""
 
-    def test_to_dict_excludes_description_and_result(self):
+    def test_to_dict_excludes_full_description_and_result(self):
         node = TaskNode(employee_id="e1")
         node.description = "big text"
         node.result = "big result"
@@ -518,6 +518,84 @@ class TestTaskNodeContentExternalization:
         assert "description" not in d
         assert "result" not in d
         assert d["description_preview"] == "big text"
+        assert d["result_preview"] == "big result"
+
+    def test_failed_to_dict_includes_error_for_ws_payload(self):
+        node = TaskNode(employee_id="e1")
+        node.status = TaskPhase.FAILED.value
+        node.result = "Error: 504 Gateway Time-out"
+
+        d = node.to_dict()
+
+        assert d["result_preview"] == "Error: 504 Gateway Time-out"
+        assert d["error"] == "Error: 504 Gateway Time-out"
+
+    def test_failed_to_dict_synthesises_error_when_result_empty(self):
+        """Agents that crash before producing any output still need a non-empty
+        error string — otherwise the frontend's ``task.error || task.result ||
+        'unknown error'`` chain falls through to "unknown error" with no hint."""
+        node = TaskNode(employee_id="e1", id="abc123")
+        node.status = TaskPhase.FAILED.value
+        node.result = ""
+
+        d = node.to_dict()
+
+        assert "result_preview" not in d  # nothing to preview
+        assert d["error"], "error must be non-empty even when result is missing"
+        assert "abc123" in d["error"]
+        assert "failed" in d["error"]
+
+    def test_blocked_to_dict_includes_error_for_ws_payload(self):
+        """BLOCKED is a WILL_NOT_DELIVER terminal (see task_lifecycle.py:79):
+        the dep cascade in vessel.py writes a reason into node.result, and the
+        frontend should surface it just like FAILED/CANCELLED."""
+        node = TaskNode(employee_id="e1")
+        node.status = TaskPhase.BLOCKED.value
+        node.result = "Blocked: dependency \"Run experiment\" failed."
+
+        d = node.to_dict()
+
+        assert d["error"] == "Blocked: dependency \"Run experiment\" failed."
+
+    def test_cancelled_to_dict_includes_error(self):
+        node = TaskNode(employee_id="e1")
+        node.status = TaskPhase.CANCELLED.value
+        node.result = "Cascade cancelled: dependency \"X\" was cancelled"
+
+        d = node.to_dict()
+
+        assert d["error"] == "Cascade cancelled: dependency \"X\" was cancelled"
+
+    def test_failed_error_is_tail_biased(self):
+        """Long failure output (traceback) is tail-truncated so the exception
+        class and message at the bottom survive. The head usually contains
+        framework preamble that doesn't help debugging."""
+        from onemancompany.core.task_tree import ERROR_PREVIEW_CHARS
+
+        head_marker = "FRAMEWORK_PREAMBLE_THAT_MUST_BE_DROPPED"
+        head_filler = "A" * (ERROR_PREVIEW_CHARS + 500)
+        tail = "ZeroDivisionError: integer division or modulo by zero"
+        node = TaskNode(employee_id="e1")
+        node.status = TaskPhase.FAILED.value
+        node.result = head_marker + head_filler + "\n" + tail
+
+        d = node.to_dict()
+
+        assert tail in d["error"], "tail of result (where the real error is) must be preserved"
+        assert head_marker not in d["error"], "framework preamble at the head should be truncated away"
+        assert len(d["error"]) == ERROR_PREVIEW_CHARS
+
+    def test_result_preview_is_capped_at_success_limit(self):
+        """result_preview ships on every WS frame; it's bounded at the tight
+        success-path budget (RESULT_PREVIEW_CHARS) regardless of node status."""
+        from onemancompany.core.task_tree import RESULT_PREVIEW_CHARS
+
+        node = TaskNode(employee_id="e1")
+        node.result = "x" * (RESULT_PREVIEW_CHARS + 500)
+
+        d = node.to_dict()
+
+        assert len(d["result_preview"]) == RESULT_PREVIEW_CHARS
 
     def test_from_dict_with_old_format_migrates(self):
         """Backward compat: old YAML with inline description/result."""
@@ -658,6 +736,25 @@ class TestSubtreeResolved:
         child = tree.add_child(root.id, "e1", "child", [])
         child.status = "accepted"
         assert tree.is_project_complete() is True
+
+    def test_has_pipeline_managed_nodes_helper(self):
+        """Predicate for callers (vessel.py) to gate legacy completion logic.
+
+        ``is_project_complete`` itself keeps its legacy EA-anchor semantics —
+        the pipeline-vs-EA decision belongs at the call site, not inside
+        this generic method. Otherwise mixed trees (a pipeline plus a
+        product-owner sidecar followup, possible per task_followup route 3)
+        would be silently pinned to never-complete inside is_project_complete.
+        """
+        tree = TaskTree(project_id="proj1")
+        root = tree.create_root("00001", "CEO prompt")
+        root.node_type = "ceo_prompt"
+        stage = tree.add_child(root.id, "00006", "Stage 1", [])
+        stage.node_type = "task"
+
+        assert tree.has_pipeline_managed_nodes() is False
+        stage.metadata = {"pipeline_managed": True}
+        assert tree.has_pipeline_managed_nodes() is True
 
 
 class TestTaskTreeContentExternalization:

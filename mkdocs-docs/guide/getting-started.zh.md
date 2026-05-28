@@ -94,8 +94,7 @@ npx @1mancompany/onemancompany uninstall
 
 | 文件 | 用途 |
 | --- | --- |
-| `.onemancompany/.env` | API 密钥（OpenRouter、Anthropic 等） |
-| `.onemancompany/config.yaml` | 应用配置（Talent Market URL 等） |
+| `.onemancompany/.env` | API Keys 与应用配置 |
 | 浏览器设置面板 | 前端偏好设置 |
 
 ## 下一步

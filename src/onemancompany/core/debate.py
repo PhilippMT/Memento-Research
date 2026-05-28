@@ -79,6 +79,15 @@ class DebateResult:
 # ---------------------------------------------------------------------------
 
 
+def _format_current_round_so_far(responses: list[dict]) -> str:
+    if not responses:
+        return "(No one has spoken yet in this round.)"
+    parts = []
+    for resp in responses:
+        parts.append(f"  {resp['agent_name']}: {resp['content']}")
+    return "\n".join(parts)
+
+
 def _format_round_history(history: list[DebateRound]) -> str:
     if not history:
         return "(This is the first round — no previous discussion.)"
@@ -114,6 +123,39 @@ def _build_agent_prompt(
         f"Debate topic: {topic}\n"
         f"Current round: Round {round_num}\n\n"
         f"Previous rounds:\n{history_text}\n\n"
+        f"Based on the above discussion and your expertise, state your position clearly and concisely "
+        f"(3-5 sentences). Reference or respond to others' arguments where relevant. "
+        f"Be direct — this is a debate, not a meeting."
+    )
+
+
+def _build_sequential_agent_prompt(
+    emp_data: dict,
+    emp_id: str,
+    topic: str,
+    history: list[DebateRound],
+    current_round_so_far: list[dict],
+    round_num: int,
+) -> str:
+    name = emp_data.get(PF_NAME, "")
+    nickname = emp_data.get(PF_NICKNAME, "")
+    role = emp_data.get(PF_ROLE, "")
+    dept = emp_data.get(PF_DEPARTMENT, "")
+    level = emp_data.get(PF_LEVEL, 1)
+    principles = emp_data.get(PF_WORK_PRINCIPLES, "")
+    principles_ctx = f"\nYour work principles:\n{principles[:MAX_PRINCIPLES_LEN]}\n" if principles else ""
+
+    history_text = _format_round_history(history)
+    current_text = _format_current_round_so_far(current_round_so_far)
+
+    return (
+        f"You are {name} ({nickname}, Department: {dept}, {role}, Lv.{level}).\n"
+        f"{principles_ctx}"
+        f"You are participating in a structured multi-agent debate.\n"
+        f"Debate topic: {topic}\n"
+        f"Current round: Round {round_num}\n\n"
+        f"Previous rounds:\n{history_text}\n\n"
+        f"Responses so far this round:\n{current_text}\n\n"
         f"Based on the above discussion and your expertise, state your position clearly and concisely "
         f"(3-5 sentences). Reference or respond to others' arguments where relevant. "
         f"Be direct — this is a debate, not a meeting."
@@ -281,6 +323,7 @@ async def run_debate_session(
     agents_data: dict[str, dict],
     max_rounds: int,
     judge_id: str = "",
+    mode: str = "parallel",
     on_message: Callable[[dict], Awaitable[None]] | None,
 ) -> DebateResult:
     """Run a full debate session. Returns DebateResult.
@@ -294,6 +337,9 @@ async def run_debate_session(
             consensus checks — their role/persona will influence the conclusion.
             If empty (default), an impartial anonymous judge LLM is used instead
             (company default model, no persona), eliminating participant bias.
+        mode: "parallel" (default) — all agents respond simultaneously each round.
+            "sequential" — agents respond one by one; each agent sees the responses
+            of those who spoke earlier in the same round before composing their reply.
         on_message: Async callback called for each message event (for real-time push).
     """
     if len(participant_ids) < 2:
@@ -334,30 +380,51 @@ async def run_debate_session(
         logger.debug("[debate] round {}/{}", round_num, max_rounds)
         await _emit("SYSTEM", "system", f"── Round {round_num} ──", "debate_round_start")
 
-        # All agents respond in parallel
-        async def _agent_respond(agent_id: str) -> dict:
-            emp_data = agents_data[agent_id]
-            prompt = _build_agent_prompt(emp_data, agent_id, topic, rounds, round_num)
-            llm = make_llm(agent_id)
-            resp = await tracked_ainvoke(llm, prompt, category="debate", employee_id=agent_id)
-            return {
-                "agent_id": agent_id,
-                "agent_name": emp_data.get(PF_NICKNAME, "") or emp_data.get(PF_NAME, agent_id),
-                "content": resp.content,
-            }
-
-        results = await asyncio.gather(
-            *[_agent_respond(pid) for pid in participant_ids],
-            return_exceptions=True,
-        )
-
         round_responses: list[dict] = []
-        for r in results:
-            if isinstance(r, Exception):
-                logger.warning("[debate] agent response failed: {}", r)
-                continue
-            round_responses.append(r)
-            await _emit(r["agent_name"], "debater", r["content"])
+
+        if mode == "sequential":
+            for agent_id in participant_ids:
+                emp_data = agents_data[agent_id]
+                prompt = _build_sequential_agent_prompt(
+                    emp_data, agent_id, topic, rounds, round_responses, round_num,
+                )
+                llm = make_llm(agent_id)
+                try:
+                    resp = await tracked_ainvoke(llm, prompt, category="debate", employee_id=agent_id)
+                except Exception as exc:
+                    logger.warning("[debate] agent {} response failed: {}", agent_id, exc)
+                    continue
+                entry = {
+                    "agent_id": agent_id,
+                    "agent_name": emp_data.get(PF_NICKNAME, "") or emp_data.get(PF_NAME, agent_id),
+                    "content": resp.content,
+                }
+                round_responses.append(entry)
+                await _emit(entry["agent_name"], "debater", entry["content"])
+        else:
+            # All agents respond in parallel (default)
+            async def _agent_respond(agent_id: str) -> dict:
+                emp_data = agents_data[agent_id]
+                prompt = _build_agent_prompt(emp_data, agent_id, topic, rounds, round_num)
+                llm = make_llm(agent_id)
+                resp = await tracked_ainvoke(llm, prompt, category="debate", employee_id=agent_id)
+                return {
+                    "agent_id": agent_id,
+                    "agent_name": emp_data.get(PF_NICKNAME, "") or emp_data.get(PF_NAME, agent_id),
+                    "content": resp.content,
+                }
+
+            results = await asyncio.gather(
+                *[_agent_respond(pid) for pid in participant_ids],
+                return_exceptions=True,
+            )
+
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.warning("[debate] agent response failed: {}", r)
+                    continue
+                round_responses.append(r)
+                await _emit(r["agent_name"], "debater", r["content"])
 
         rounds.append(DebateRound(round_num=round_num, responses=round_responses))
 

@@ -134,6 +134,59 @@ async def test_get_api_settings_returns_all_providers():
         )
 
 
+@pytest.mark.asyncio
+async def test_talent_market_settings_use_env_settings(monkeypatch):
+    """Talent Market settings should be reported from .env-backed Settings."""
+    from onemancompany.api.routes import get_api_settings
+    import onemancompany.api.routes as routes_mod
+    import onemancompany.core.config as cfg_mod
+
+    settings = cfg_mod.Settings()
+    settings.talent_market_api_key = "tm-secret-1234"
+    settings.talent_market_mode = "remote"
+    settings.talent_market_use_ai_search = True
+    monkeypatch.setattr(cfg_mod, "settings", settings)
+    monkeypatch.setattr(routes_mod, "_get_talent_market_connected", lambda: False)
+    monkeypatch.setattr(routes_mod, "_get_local_talent_count", lambda: 0)
+
+    result = await get_api_settings()
+
+    assert result["talent_market"]["api_key_set"] is True
+    assert result["talent_market"]["api_key_preview"] == "...1234"
+    assert result["talent_market"]["mode"] == "remote"
+    assert result["talent_market"]["use_ai_search"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_talent_market_settings_writes_env(monkeypatch):
+    """Updating Talent Market settings should write .env keys, not config.yaml."""
+    from onemancompany.api.routes import update_api_settings
+    import onemancompany.api.routes as routes_mod
+
+    calls = []
+
+    def fake_update_env_var(key, value):
+        calls.append((key, value))
+
+    monkeypatch.setattr("onemancompany.core.config.update_env_var", fake_update_env_var)
+    monkeypatch.setattr(routes_mod, "_get_talent_market_connected", lambda: False)
+    monkeypatch.setattr(routes_mod, "_get_local_talent_count", lambda: 0)
+    monkeypatch.setattr("onemancompany.agents.recruitment.stop_talent_market", AsyncMock())
+    monkeypatch.setattr("onemancompany.agents.recruitment.start_talent_market", AsyncMock())
+
+    result = await update_api_settings({
+        "provider": "talent_market",
+        "api_key": "tm-secret",
+        "use_ai_search": True,
+        "mode": "remote",
+    })
+
+    assert result["status"] == "updated"
+    assert ("TALENT_MARKET_API_KEY", "tm-secret") in calls
+    assert ("TALENT_MARKET_USE_AI_SEARCH", "true") in calls
+    assert ("TALENT_MARKET_MODE", "remote") in calls
+
+
 # ---------------------------------------------------------------------------
 # Founding employee sync — single source of truth
 # ---------------------------------------------------------------------------

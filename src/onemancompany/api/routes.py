@@ -654,23 +654,71 @@ async def ceo_submit_task(
     }
 
 
-@router.post("/api/task/{project_id}/followup")
-async def task_followup(project_id: str, body: dict) -> dict:
-    """CEO adds follow-up instructions to an existing task, dispatched to assignee (product owner or EA) with context."""
-    from datetime import datetime as _dt
+def _record_ceo_followup_audit(
+    project_dir: str, project_id: str, instructions: str, stage: int,
+) -> None:
+    """Append an audit-only CEO_FOLLOWUP node to the project task tree.
 
-    from onemancompany.core.agent_loop import get_agent_loop
-    from onemancompany.core.project_archive import get_project_dir, append_action
-    from onemancompany.core.task_tree import TaskTree, get_tree, save_tree_async
+    The node has no executable child — it exists purely so the task panel
+    and tree history can show "the CEO said X while pipeline was at stage Y".
+    The pipeline state machine remains the sole dispatcher; nothing schedules
+    against this node.
+    """
+    from pathlib import Path
+
+    from onemancompany.core.task_tree import TaskTree, get_tree
     from onemancompany.core.vessel import _save_project_tree
 
-    instructions = body.get("instructions", "").strip()
+    tree_path = Path(project_dir) / TASK_TREE_FILENAME
+    tree = get_tree(tree_path, project_id=project_id) if tree_path.exists() else TaskTree(project_id=project_id)
+
+    if not tree.root_id:
+        # No CEO root yet (rare for a project being driven by pipeline_engine).
+        # Skip the audit node rather than mint a synthetic root that would
+        # confuse downstream consumers.
+        return
+
+    audit_node = tree.add_child(
+        parent_id=tree.root_id,
+        employee_id=CEO_ID,
+        description=instructions,
+        acceptance_criteria=[],
+    )
+    audit_node.node_type = NodeType.CEO_FOLLOWUP
+    audit_node.status = TaskPhase.ACCEPTED.value
+    audit_node.title = f"CEO followup (stage {stage})"
+    _save_project_tree(project_dir, tree)
+
+
+@router.post("/api/task/{project_id}/followup")
+async def task_followup(project_id: str, body: dict) -> dict:
+    """CEO adds follow-up instructions to an existing project.
+
+    Routing (no legacy EA-orchestrator fallback):
+
+    1. Active pipeline + phase == "gate"  → ``engine.on_ceo_approve(feedback=instructions)``
+       (advances the stage, or re-runs with revision keywords)
+    2. Active pipeline + phase != "gate"  → ``engine.queue_pending_feedback(instructions)``
+       (consumed on the next producer dispatch; pipeline state machine keeps owning the children)
+    3. No active pipeline + product owner → dispatch to the product owner with a context block
+    4. No active pipeline + no owner      → 400 (cannot dispatch — there is no orchestrator)
+    """
+    from pathlib import Path
+
+    from onemancompany.core.agent_loop import get_agent_loop
+    from onemancompany.core.pipeline_engine import get_or_load_pipeline
+    from onemancompany.core.project_archive import (
+        _resolve_and_load,
+        _save_resolved,
+        append_action,
+        get_project_dir,
+    )
+    from onemancompany.core.task_tree import TaskTree, get_tree
+    from onemancompany.core.vessel import _save_project_tree
+
+    instructions = (body.get("instructions") or "").strip()
     if not instructions:
         return {"error": "Empty instructions"}
-
-    # Load project from filesystem (persistent, not in-memory)
-    from pathlib import Path
-    from onemancompany.core.project_archive import _resolve_and_load
 
     pdir = str(get_project_dir(project_id))
     if not pdir:
@@ -680,19 +728,94 @@ async def task_followup(project_id: str, body: dict) -> dict:
     if not doc:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    original_task = doc.get("task", "")
+    # ------------------------------------------------------------------
+    # 1 & 2. Active pipeline owns the orchestration — route there.
+    #
+    # "done" and "failed" are terminal: feedback into them would grow the
+    # queue with no producer to drain it, so we fall through to the no-
+    # orchestrator path (which 400s) instead. Recovery from "failed" goes
+    # through the explicit /api/pipeline/resume endpoint.
+    # ------------------------------------------------------------------
+    PIPELINE_TERMINAL_PHASES = ("done", "failed")
+    engine = get_or_load_pipeline(project_id, pdir)
+    if engine and engine.phase not in PIPELINE_TERMINAL_PHASES:
+        append_action(project_id, "ceo", "follow-up instructions", instructions[:200])
+        # Audit-only CEO_FOLLOWUP node so the task panel keeps a record of
+        # what the CEO said at each stage. No executable child — the pipeline
+        # state machine remains the sole dispatcher.
+        _record_ceo_followup_audit(pdir, project_id, instructions, engine.current_stage)
+        if engine.phase == "gate":
+            logger.info(
+                "[FOLLOWUP] Pipeline gate open at stage {}, routing to on_ceo_approve",
+                engine.current_stage,
+            )
+            engine.on_ceo_approve(feedback=instructions)
+            await event_bus.publish(
+                CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
+            )
+            return {
+                "status": "ok",
+                "routed_to": "pipeline_gate",
+                "project_id": project_id,
+                "stage": engine.current_stage,
+                "phase": engine.phase,
+            }
+        logger.info(
+            "[FOLLOWUP] Pipeline mid-flight (stage {} phase {}), queuing CEO feedback",
+            engine.current_stage, engine.phase,
+        )
+        engine.queue_pending_feedback(instructions)
+        await event_bus.publish(
+            CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
+        )
+        return {
+            "status": "ok",
+            "routed_to": "pipeline_queue",
+            "project_id": project_id,
+            "stage": engine.current_stage,
+            "phase": engine.phase,
+            "message": "Pipeline is mid-flight; feedback will be applied on the next producer dispatch.",
+        }
 
-    # Load task tree and collect all previous work results
+    # ------------------------------------------------------------------
+    # 3. No pipeline — only product-owner dispatch is legal.
+    # ------------------------------------------------------------------
+    product_id = doc.get("product_id", "")
+    if not product_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No active pipeline and no linked product owner — there is no orchestrator "
+                "to receive this follow-up. Start a pipeline or link the project to a product."
+            ),
+        )
+
+    from onemancompany.core.product import find_slug_by_product_id, load_product
+    product_slug = find_slug_by_product_id(product_id)
+    if not product_slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Project is linked to product_id={product_id} but its slug cannot be resolved.",
+        )
+    product = load_product(product_slug)
+    owner_id = (product or {}).get("owner_id", "")
+    if not owner_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Product '{product_slug}' has no owner — cannot route follow-up.",
+        )
+
+    # Build the follow-up context for the product owner.
+    original_task = doc.get("task", "")
     tree_path = Path(pdir) / TASK_TREE_FILENAME
     work_summary_lines: list[str] = []
     if tree_path.exists():
-        tree = get_tree(tree_path, project_id=project_id)
+        existing_tree = get_tree(tree_path, project_id=project_id)
         from onemancompany.core.vessel import _collect_work_results, _list_deliverables
-        work_nodes = _collect_work_results(tree, pdir)
-        for wn in work_nodes:
+        for wn in _collect_work_results(existing_tree, pdir):
             title = wn.title or wn.description_preview[:80]
-            result = (wn.result or "").strip()
-            work_summary_lines.append(f"  [{wn.employee_id}] {title}: {result}")
+            result_text = (wn.result or "").strip()
+            work_summary_lines.append(f"  [{wn.employee_id}] {title}: {result_text}")
         deliverables = _list_deliverables(pdir)
         if deliverables:
             work_summary_lines.append("")
@@ -700,55 +823,28 @@ async def task_followup(project_id: str, body: dict) -> dict:
             for fname in deliverables:
                 work_summary_lines.append(f"  {fname}")
 
-    # Determine assignee: product owner if product-linked, else EA
-    assignee_id = EA_ID
-    product_id = doc.get("product_id", "")
-    if product_id:
-        from onemancompany.core.product import find_slug_by_product_id, load_product
-        product_slug = find_slug_by_product_id(product_id)
-        if product_slug:
-            product = load_product(product_slug)
-            if product and product.get("owner_id"):
-                assignee_id = product["owner_id"]
-                logger.debug("[FOLLOWUP] Product-linked project {}, routing to owner {}",
-                             project_id, assignee_id)
-        if assignee_id == EA_ID:
-            logger.debug("[FOLLOWUP] No product owner found for project {}, falling back to EA",
-                         project_id)
-
-    # Build follow-up task for assignee
     context_parts = [
-        f"CEO has added follow-up instructions to a completed task:\n",
+        "CEO has added follow-up instructions to a completed task:\n",
         f"Original task: {original_task}\n",
     ]
     if work_summary_lines:
-        context_parts.append(f"Previous work results:\n" + "\n".join(work_summary_lines) + "\n")
+        context_parts.append("Previous work results:\n" + "\n".join(work_summary_lines) + "\n")
     context_parts.append(f"CEO follow-up instructions: {instructions}\n")
     context_parts.append(
-        f"\nBuild on the existing work — do NOT redo completed subtasks unless the CEO explicitly asks."
-        f" Use dispatch_child() if subtasks are needed.\n\n"
+        "\nBuild on the existing work — do NOT redo completed subtasks unless the CEO explicitly asks."
+        " Use dispatch_child() if subtasks are needed.\n\n"
         f"[Project ID: {project_id}] [Project workspace: {pdir}]"
     )
     followup_task = "\n".join(context_parts)
 
-    # Append to existing tree (or create new if none exists)
-    tree_path = Path(pdir) / TASK_TREE_FILENAME
-    if tree_path.exists():
-        tree = get_tree(tree_path, project_id=project_id)
-    else:
-        tree = TaskTree(project_id=project_id)
+    tree = get_tree(tree_path, project_id=project_id) if tree_path.exists() else TaskTree(project_id=project_id)
 
-    assignee_loop = get_agent_loop(assignee_id)
-    if not assignee_loop:
-        raise HTTPException(status_code=503, detail=f"Agent {assignee_id} not available")
-
-    schedule_node_id = ""  # will be set to the assignee node to schedule
+    owner_loop = get_agent_loop(owner_id)
+    if not owner_loop:
+        raise HTTPException(status_code=503, detail=f"Agent {owner_id} not available")
 
     if tree.root_id:
-        # Add a new subtree from CEO root — old subtree stays intact
         root = tree.get_node(tree.root_id)
-
-        # Record the followup instruction as a CEO node under root
         followup_node = tree.add_child(
             parent_id=tree.root_id,
             employee_id=CEO_ID,
@@ -757,55 +853,47 @@ async def task_followup(project_id: str, body: dict) -> dict:
         )
         followup_node.node_type = NodeType.CEO_FOLLOWUP
         followup_node.status = TaskPhase.ACCEPTED.value
-
-        # Create execution node under the followup node
         exec_child = tree.add_child(
             parent_id=followup_node.id,
-            employee_id=assignee_id,
+            employee_id=owner_id,
             description=followup_task,
             acceptance_criteria=[],
         )
-        schedule_node_id = exec_child.id
-
-        # Keep CEO root in PROCESSING while new subtree runs
         if root and root.node_type == NodeType.CEO_PROMPT:
             root.status = TaskPhase.PROCESSING.value
     else:
-        # No root yet — create CEO root + assignee child
         ceo_root = tree.create_root(employee_id=CEO_ID, description=instructions)
         ceo_root.node_type = NodeType.CEO_PROMPT
         ceo_root.set_status(TaskPhase.PROCESSING)
         exec_child = tree.add_child(
             parent_id=ceo_root.id,
-            employee_id=assignee_id,
+            employee_id=owner_id,
             description=instructions,
             acceptance_criteria=[],
         )
-        schedule_node_id = exec_child.id
 
     _save_project_tree(pdir, tree)
 
-    # Schedule the assignee node for execution
-    if schedule_node_id:
-        tree_path = str(Path(pdir) / TASK_TREE_FILENAME)
-        from onemancompany.core.agent_loop import employee_manager
-        employee_manager.schedule_node(assignee_id, schedule_node_id, tree_path)
-        employee_manager._schedule_next(assignee_id)
+    tree_path_str = str(Path(pdir) / TASK_TREE_FILENAME)
+    from onemancompany.core.agent_loop import employee_manager
+    employee_manager.schedule_node(owner_id, exec_child.id, tree_path_str)
+    employee_manager._schedule_next(owner_id)
 
-    # Update project.yaml status back to in_progress
     doc["status"] = "in_progress"
     doc["completed_at"] = None
-    from onemancompany.core.project_archive import _save_resolved
     _save_resolved(_ver, _key, doc)
 
-    # Log the follow-up
     append_action(project_id, "ceo", "follow-up instructions", instructions[:200])
-
     await event_bus.publish(
         CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
     )
 
-    return {"status": "ok", "project_id": project_id}
+    return {
+        "status": "ok",
+        "routed_to": "product_owner",
+        "project_id": project_id,
+        "owner_id": owner_id,
+    }
 
 
 @router.post("/api/pipeline/resume")
@@ -845,6 +933,94 @@ async def resume_pipeline_breakpoint(body: dict):
     return {"status": "resumed", "stage": stage, "pipeline_stage": engine.current_stage, "phase": engine.phase}
 
 
+@router.post("/api/pipeline/{project_id}/revert")
+async def revert_pipeline_to_stage(project_id: str, body: dict):
+    """Revert the pipeline to a previously completed stage with new
+    instructions, then re-run forward.
+
+    Body: ``{"stage": <int>, "instructions": "<text>", "branch_name": "<optional>"}``
+
+    Implementation: forks a new git branch ``feat-stage<N>-<id>`` rooted
+    at the previous stage's commit, restores the workspace to that
+    snapshot, queues the user's instructions, and re-dispatches the
+    stage's producer. Original branch and tags are preserved in git
+    history; this is a fork, not a destructive rewrite.
+
+    Works at any phase: when a stage is mid-flight, the engine cancels
+    the in-flight producer/critic and scrubs any partial workspace
+    writes before forking. Callers don't need to wait for a gate.
+    """
+    from onemancompany.core.pipeline_engine import (
+        get_or_load_pipeline, RevertNotAllowedError,
+    )
+    from onemancompany.core.project_archive import get_project_dir
+    from onemancompany.core import project_repo
+
+    stage = body.get("stage")
+    instructions = (body.get("instructions") or "").strip()
+    branch_name = body.get("branch_name") or None
+
+    if not isinstance(stage, int):
+        raise HTTPException(status_code=400, detail="Missing or invalid 'stage' (int)")
+    if not instructions:
+        raise HTTPException(status_code=400, detail="Missing 'instructions' (text)")
+
+    pdir = str(get_project_dir(project_id))
+    if not pdir:
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    engine = get_or_load_pipeline(project_id, pdir)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No active pipeline for this project")
+
+    try:
+        new_branch = await engine.revert_to_stage(
+            stage=stage, instructions=instructions, branch_name=branch_name,
+        )
+    except RevertNotAllowedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except project_repo.DirtyWorkspaceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except project_repo.StageNotCommittedError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "status": "reverted",
+        "stage": engine.current_stage,
+        "phase": engine.phase,
+        "branch": new_branch,
+    }
+
+
+@router.get("/api/pipeline/{project_id}/branches")
+async def list_pipeline_branches(project_id: str):
+    """Enumerate the project's git branches for the sidebar's
+    "you are on branch X" indicator. Returns ``[]`` when the repo
+    hasn't been initialised yet (legacy projects) or when git ops
+    fail (corrupt .git). A 200 with empty data is preferable to a
+    500 here — the sidebar treats absent branch info as "no fork
+    available yet" rather than as an error condition."""
+    from onemancompany.core.project_archive import get_project_dir
+    from onemancompany.core import project_repo
+
+    pdir = str(get_project_dir(project_id))
+    if not pdir:
+        raise HTTPException(status_code=404, detail="Project directory not found")
+    try:
+        return {
+            "current": project_repo.current_branch(pdir),
+            "branches": project_repo.list_branches(pdir),
+        }
+    except Exception as exc:
+        logger.warning(
+            "[branches] git introspection failed for project {}: {}",
+            project_id, exc,
+        )
+        return {"current": None, "branches": []}
+
+
 @router.get("/api/pipeline/{project_id}/status")
 async def pipeline_status(project_id: str):
     """Get current pipeline state for a project."""
@@ -861,23 +1037,36 @@ async def pipeline_status(project_id: str):
     ws_files = []
     if pdir:
         from pathlib import Path as _P
+        # Text deliverables are read inline so the frontend can preview them
+        # without a second round-trip. Binary deliverables (pdf) are listed
+        # with empty content; the preview UI fetches them lazily via
+        # /api/projects/{pid}/files/{path} when the user opens them.
+        _TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml", ".py", ".csv", ".tex"}
+        _BINARY_SUFFIXES = {".pdf"}
         for f in sorted(_P(pdir).rglob("*")):
-            if f.is_file() and f.suffix in (".md", ".txt", ".json", ".yaml", ".yml", ".py", ".csv"):
-                rel = str(f.relative_to(pdir))
-                if rel.startswith("nodes/") or rel == "pipeline_state.yaml" or rel == "task_tree.yaml":
-                    continue
+            if not f.is_file():
+                continue
+            suffix = f.suffix.lower()
+            if suffix not in _TEXT_SUFFIXES and suffix not in _BINARY_SUFFIXES:
+                continue
+            rel = str(f.relative_to(pdir))
+            if rel.startswith("nodes/") or rel == "pipeline_state.yaml" or rel == "task_tree.yaml":
+                continue
+            if suffix in _TEXT_SUFFIXES:
                 try:
                     content = f.read_text(encoding="utf-8")
                 except Exception:
                     content = ""
-                ws_files.append({
-                    "file_name": f.name,
-                    "file_path": rel,
-                    "full_path": str(f),
-                    "size": f.stat().st_size,
-                    "content": content,
-                    "type": "create",
-                })
+            else:
+                content = ""  # binary — lazy-load via files endpoint
+            ws_files.append({
+                "file_name": f.name,
+                "file_path": rel,
+                "full_path": str(f),
+                "size": f.stat().st_size,
+                "content": content,
+                "type": "create",
+            })
 
     return {
         "current_stage": engine.current_stage,
@@ -2197,17 +2386,15 @@ async def get_api_settings() -> dict:
             entry["auth_method"] = settings.anthropic_auth_method
         result[name] = entry
 
-    # Talent market (stored in config.yaml, not .env)
-    from onemancompany.core.config import load_app_config
-    tm = load_app_config().get("talent_market", {})
-    tm_key = tm.get("api_key", "")
+    # Talent Market settings are .env-backed like other provider settings.
+    tm_key = settings.talent_market_api_key
     result["talent_market"] = {
         "api_key_set": bool(tm_key),
         "api_key_preview": ("..." + tm_key[-4:]) if len(tm_key) >= 4 else "",
-        "mode": tm.get("mode", "local"),
+        "mode": settings.talent_market_mode,
         "connected": _get_talent_market_connected(),
         "local_talent_count": _get_local_talent_count(),
-        "use_ai_search": tm.get("use_ai_search", False),
+        "use_ai_search": settings.talent_market_use_ai_search,
     }
 
     return result
@@ -2221,23 +2408,20 @@ async def update_api_settings(body: dict) -> dict:
     provider = body.get("provider", "")
 
     if provider == "talent_market":
-        # Save talent market API key to config.yaml
-        import yaml
-        from onemancompany.core.config import APP_CONFIG_PATH, load_app_config, reload_app_config
         api_key = body.get("api_key", "")
         has_toggle = "use_ai_search" in body or "mode" in body
         if not api_key and not has_toggle:
             return {"error": "API key, use_ai_search, or mode is required"}
-        config = load_app_config()
-        tm = config.setdefault("talent_market", {})
+
         if api_key:
-            tm["api_key"] = api_key
+            update_env_var("TALENT_MARKET_API_KEY", api_key)
         if "use_ai_search" in body:
-            tm["use_ai_search"] = bool(body["use_ai_search"])
+            update_env_var("TALENT_MARKET_USE_AI_SEARCH", "true" if body["use_ai_search"] else "false")
         if "mode" in body and body["mode"] in ("local", "remote"):
-            tm["mode"] = body["mode"]
-        write_text_utf(APP_CONFIG_PATH, yaml.dump(config, default_flow_style=False, allow_unicode=True))
-        reload_app_config()
+            update_env_var("TALENT_MARKET_MODE", body["mode"])
+
+        from onemancompany.core import config as _config
+        tm_settings = _config.settings
 
         # Reconnect Talent Market only if API key was actually changed
         if api_key:
@@ -2251,10 +2435,10 @@ async def update_api_settings(body: dict) -> dict:
         return {
             "status": "updated",
             "talent_market": {
-                "api_key_set": bool(tm.get("api_key", "")),
-                "api_key_preview": ("..." + api_key[-4:]) if api_key and len(api_key) >= 4 else "",
-                "use_ai_search": tm.get("use_ai_search", False),
-                "mode": tm.get("mode", "local"),
+                "api_key_set": bool(tm_settings.talent_market_api_key),
+                "api_key_preview": ("..." + tm_settings.talent_market_api_key[-4:]) if len(tm_settings.talent_market_api_key) >= 4 else "",
+                "use_ai_search": tm_settings.talent_market_use_ai_search,
+                "mode": tm_settings.talent_market_mode,
             },
         }
 
@@ -4633,9 +4817,8 @@ async def hire_from_cv(body: dict) -> dict:
                 source_repo = cv.get("source_repo", "")
                 repo_url = source_repo
                 if not repo_url:
+                    tm_url = settings.talent_market_url
                     try:
-                        from onemancompany.core.config import load_app_config
-                        tm_url = load_app_config().get("talent_market", {}).get("url", "https://api.one-man-company.com/mcp/sse")
                         onboard_result = await talent_market.onboard(talent_id)
                         repo_url = onboard_result.get("repo_url", "")
                     except Exception as e:
@@ -6134,6 +6317,8 @@ async def post_room_chat(room_id: str, body: dict):
 
     entry = {
         "room_id": room_id,
+        "speaker_id": CEO_ID,
+        "speaker_name": "CEO",
         "speaker": "CEO",
         "role": "CEO",
         "message": message,

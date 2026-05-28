@@ -17,31 +17,42 @@ from onemancompany.tools import sandbox as sandbox_mod
 
 
 class TestLoadSandboxConfig:
-    def test_defaults_when_no_config(self):
-        with patch.object(sandbox_mod, "load_app_config", return_value={}):
+    def test_defaults_from_settings(self):
+        settings = MagicMock(
+            sandbox_enabled=False,
+            sandbox_server_url="http://localhost:8080",
+            sandbox_default_image="opensandbox/code-interpreter:v1.0.1",
+            sandbox_timeout_seconds=120,
+        )
+        with patch.object(sandbox_mod._config, "settings", settings):
             cfg = sandbox_mod.load_sandbox_config()
         assert cfg["enabled"] is False
         assert cfg["server_url"] == "http://localhost:8080"
         assert cfg["default_image"] == "opensandbox/code-interpreter:v1.0.1"
         assert cfg["timeout_seconds"] == 120
 
-    def test_overrides_from_config(self):
-        app_cfg = {"tools": {"sandbox": {"enabled": True, "server_url": "http://myhost:9090"}}}
-        with patch.object(sandbox_mod, "load_app_config", return_value=app_cfg):
+    def test_overrides_from_settings(self):
+        settings = MagicMock(
+            sandbox_enabled=True,
+            sandbox_server_url="http://myhost:9090",
+            sandbox_default_image="custom/image:latest",
+            sandbox_timeout_seconds=42,
+        )
+        with patch.object(sandbox_mod._config, "settings", settings):
             cfg = sandbox_mod.load_sandbox_config()
         assert cfg["enabled"] is True
         assert cfg["server_url"] == "http://myhost:9090"
-        assert cfg["default_image"] == "opensandbox/code-interpreter:v1.0.1"
+        assert cfg["default_image"] == "custom/image:latest"
+        assert cfg["timeout_seconds"] == 42
 
-    def test_none_sandbox_section_uses_defaults(self):
-        app_cfg = {"tools": {"sandbox": None}}
-        with patch.object(sandbox_mod, "load_app_config", return_value=app_cfg):
-            cfg = sandbox_mod.load_sandbox_config()
-        assert cfg["enabled"] is False
-
-    def test_missing_tools_section(self):
-        app_cfg = {"other": "stuff"}
-        with patch.object(sandbox_mod, "load_app_config", return_value=app_cfg):
+    def test_missing_optional_settings_use_defaults(self):
+        settings = MagicMock(
+            sandbox_enabled=False,
+            sandbox_server_url="http://localhost:8080",
+            sandbox_default_image="opensandbox/code-interpreter:v1.0.1",
+            sandbox_timeout_seconds=120,
+        )
+        with patch.object(sandbox_mod._config, "settings", settings):
             cfg = sandbox_mod.load_sandbox_config()
         assert cfg["enabled"] is False
 

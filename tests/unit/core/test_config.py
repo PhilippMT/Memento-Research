@@ -30,51 +30,59 @@ def _write_profile(directory: Path, emp_id: str, data: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 class TestAppConfig:
-    def test_read_app_config_missing_file(self, tmp_path, monkeypatch):
+    def test_load_app_config_uses_env_settings(self, monkeypatch):
         import onemancompany.core.config as config_mod
 
-        monkeypatch.setattr(config_mod, "APP_CONFIG_PATH", tmp_path / "missing.yaml")
-        result = config_mod._read_app_config_from_disk()
-        assert result == {}
+        monkeypatch.setenv("HOT_RELOAD", "true")
+        monkeypatch.setenv("SANDBOX_ENABLED", "true")
+        monkeypatch.setenv("SANDBOX_SERVER_URL", "http://sandbox.test:9999")
+        monkeypatch.setenv("SANDBOX_DEFAULT_IMAGE", "custom/image:latest")
+        monkeypatch.setenv("SANDBOX_TIMEOUT_SECONDS", "33")
+        monkeypatch.setenv("TALENT_MARKET_URL", "https://talent.test/sse")
+        monkeypatch.setenv("TALENT_MARKET_API_KEY", "tm-test-key")
+        monkeypatch.setenv("TALENT_MARKET_USE_AI_SEARCH", "true")
+        monkeypatch.setenv("TALENT_MARKET_MODE", "remote")
+        config_mod.reload_settings()
 
-    def test_read_app_config_from_disk(self, tmp_path, monkeypatch):
-        import onemancompany.core.config as config_mod
-
-        cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text("hot_reload: true\nport: 9000\n")
-        monkeypatch.setattr(config_mod, "APP_CONFIG_PATH", cfg_file)
-        result = config_mod._read_app_config_from_disk()
-        assert result["hot_reload"] is True
-        assert result["port"] == 9000
-
-    def test_load_app_config_returns_cached(self, monkeypatch):
-        import onemancompany.core.config as config_mod
-
-        monkeypatch.setattr(config_mod, "_app_config", {"cached": True})
         result = config_mod.load_app_config()
-        assert result == {"cached": True}
 
-    def test_reload_app_config(self, tmp_path, monkeypatch):
+        assert result["hot_reload"] is True
+        assert result["tools"]["sandbox"] == {
+            "enabled": True,
+            "server_url": "http://sandbox.test:9999",
+            "default_image": "custom/image:latest",
+            "timeout_seconds": 33,
+        }
+        assert result["talent_market"] == {
+            "url": "https://talent.test/sse",
+            "api_key": "tm-test-key",
+            "use_ai_search": True,
+            "mode": "remote",
+        }
+
+    def test_reload_app_config_reflects_env_changes(self, monkeypatch):
         import onemancompany.core.config as config_mod
 
-        cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text("hot_reload: true\n")
-        monkeypatch.setattr(config_mod, "APP_CONFIG_PATH", cfg_file)
-        result = config_mod.reload_app_config()
-        assert result["hot_reload"] is True
-        # Verify internal cache is updated
-        assert config_mod._app_config["hot_reload"] is True
+        monkeypatch.setenv("HOT_RELOAD", "false")
+        config_mod.reload_settings()
+        assert config_mod.reload_app_config()["hot_reload"] is False
+
+        monkeypatch.setenv("HOT_RELOAD", "true")
+        config_mod.reload_settings()
+        assert config_mod.reload_app_config()["hot_reload"] is True
 
     def test_is_hot_reload_enabled_true(self, monkeypatch):
         import onemancompany.core.config as config_mod
 
-        monkeypatch.setattr(config_mod, "_app_config", {"hot_reload": True})
+        monkeypatch.setenv("HOT_RELOAD", "true")
+        config_mod.reload_settings()
         assert config_mod.is_hot_reload_enabled() is True
 
     def test_is_hot_reload_enabled_false(self, monkeypatch):
         import onemancompany.core.config as config_mod
 
-        monkeypatch.setattr(config_mod, "_app_config", {})
+        monkeypatch.setenv("HOT_RELOAD", "false")
+        config_mod.reload_settings()
         assert config_mod.is_hot_reload_enabled() is False
 
 

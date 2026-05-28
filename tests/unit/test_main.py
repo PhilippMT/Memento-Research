@@ -161,7 +161,7 @@ async def _run_watcher_and_capture(request_reload_return=None, request_reload_si
     from watchdog.observers import Observer
 
     if config_path is None:
-        config_path = Path("/fake/config.yaml")
+        config_path = Path("/fake/.env")
 
     captured_handlers = []
     reload_kwargs = {}
@@ -278,7 +278,7 @@ class TestReloadHandlerInner:
 
         captured = capsys.readouterr()
         assert "Reloaded from disk" in captured.out
-        assert "config.yaml reloaded" in captured.out
+        assert ".env reloaded" in captured.out
         assert reload_handler._pending is None
 
     @pytest.mark.asyncio
@@ -311,8 +311,8 @@ class TestConfigReloadHandler:
 
     @pytest.mark.asyncio
     async def test_config_handler_triggers_on_config_change(self):
-        """Config handler triggers reload when config.yaml changes and hot_reload is on."""
-        config_path = Path("/fake/config.yaml")
+        """Config handler triggers reload when .env changes and hot_reload is on."""
+        config_path = Path("/fake/.env")
         captured_handlers = await _run_watcher_and_capture(
             hot_reload_enabled=True, config_path=config_path
         )
@@ -336,7 +336,7 @@ class TestConfigReloadHandler:
     @pytest.mark.asyncio
     async def test_config_handler_noop_when_hot_reload_off(self):
         """Config handler does nothing when hot_reload is disabled."""
-        config_path = Path("/fake/config.yaml")
+        config_path = Path("/fake/.env")
 
         from watchdog.observers import Observer
 

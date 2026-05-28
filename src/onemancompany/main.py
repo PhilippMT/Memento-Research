@@ -131,10 +131,10 @@ def _restore_ephemeral_state() -> None:
 # ---------------------------------------------------------------------------
 
 async def _start_file_watcher() -> None:
-    """Watch company/ directory and config.yaml for changes, trigger soft reload.
+    """Watch company/ directory and .env for changes, trigger soft reload.
 
     Uses request_reload() which defers if agents are busy.
-    config.yaml watching is controlled by the ``hot_reload`` flag in config.yaml itself.
+    .env watching is controlled by the ``HOT_RELOAD`` setting.
     """
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
@@ -165,7 +165,7 @@ async def _start_file_watcher() -> None:
                     if updated or added:
                         print(f"[hot-reload] Reloaded from disk: {len(updated)} updated, {len(added)} added")
                     if result.get(RELOAD_KEY_CONFIG):
-                        print("[hot-reload] config.yaml reloaded")
+                        print("[hot-reload] .env reloaded")
             except Exception as e:
                 print(f"[hot-reload] Error during reload: {e}")
 
@@ -182,7 +182,7 @@ async def _start_file_watcher() -> None:
                 self._schedule_reload()
 
     class _ConfigReloadHandler(FileSystemEventHandler):
-        """Watches config.yaml specifically; only fires if hot_reload is on."""
+        """Watches .env specifically; only fires if HOT_RELOAD is enabled."""
 
         def __init__(self, loop: asyncio.AbstractEventLoop, reload_handler: _ReloadHandler) -> None:
             self._loop = loop
@@ -203,7 +203,7 @@ async def _start_file_watcher() -> None:
     watch_dir = str(COMPANY_DIR)
     observer.schedule(reload_handler, watch_dir, recursive=True)
 
-    # Watch config.yaml at project root
+    # Watch .env at runtime data root
     config_handler = _ConfigReloadHandler(loop, reload_handler)
     observer.schedule(config_handler, str(APP_CONFIG_PATH.parent), recursive=False)
 

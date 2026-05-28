@@ -60,6 +60,49 @@ _TC_ATTR = "tool_calls"  # AIMessage attribute name
 _UNKNOWN_TOOL = "unknown"
 _NO_OUTPUT = "(no output)"
 
+# LangChain's ChatOpenAI(max_retries=...) only retries the initial HTTP request,
+# not mid-stream chunk failures. When the provider closes the chunked-transfer
+# connection mid-response (httpx.RemoteProtocolError "peer closed connection
+# without sending complete message body / incomplete chunked read"), the
+# exception bubbles up and fails the task. We retry the full streaming/invoke
+# call a few times with linear backoff so transient drops don't tank a task.
+_LLM_STREAM_RETRY_ATTEMPTS = 3  # total attempts including the first try
+_LLM_STREAM_RETRY_DELAYS = (1.0, 3.0)  # backoff before attempts 2 and 3
+
+# Substrings used as a fallback when the exception class is opaque (e.g. an
+# openai/anthropic SDK error wrapping the underlying httpx failure).
+_TRANSIENT_NETWORK_MARKERS = (
+    "peer closed connection",
+    "incomplete chunked read",
+    "connection reset",
+    "connection broken",
+    "server disconnected",
+    "remote protocol error",
+)
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like a retryable streaming/network failure."""
+    try:
+        import httpx
+    except Exception:  # pragma: no cover - httpx is always installed in practice
+        httpx = None  # type: ignore[assignment]
+    if httpx is not None and isinstance(
+        exc,
+        (
+            httpx.RemoteProtocolError,
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.PoolTimeout,
+        ),
+    ):
+        return True
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TRANSIENT_NETWORK_MARKERS)
+
 
 def _extract_text(content) -> str:
     """Extract text from AIMessage content, handling both str and list-of-blocks formats.
@@ -630,84 +673,110 @@ class BaseAgentRunner:
         # Debug trace: accumulate full message objects from streaming events
         debug_messages: list = []
 
-        async for event in self._agent.astream_events(
-            messages_input, version="v2", config={"recursion_limit": 50},
-        ):
-            kind = event.get("event", "")
-            data = event.get("data", {})
-            if kind == "on_chat_model_start":
-                inp = data.get("input", "")
-                if isinstance(inp, list) and inp:
-                    # Capture all input messages for SFT on first LLM call
-                    if not debug_messages:
-                        debug_messages.extend(inp)
-                    last_msg = inp[-1]
-                    if hasattr(last_msg, "content"):
-                        content = last_msg.content or ""
-                        if isinstance(content, str):
-                            on_log("llm_input", f"[{type(last_msg).__name__}] {content}")
-                            logger.debug("[LLM INPUT] employee={}: {}", self.employee_id, content[:3000])
-            elif kind == "on_chat_model_end":
-                output = data.get("output", None)
-                if output:
-                    # Capture AI message for Debug trace
-                    debug_messages.append(output)
-                    # Extract token usage — try response_metadata first, then usage_metadata
-                    meta = getattr(output, "response_metadata", {}) or {}
-                    usage = meta.get("usage", {}) or meta.get("token_usage", {}) or {}
-                    if usage:
-                        total_input_tokens += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
-                        total_output_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
-                        # Provider-reported cost (e.g. OpenRouter includes "cost" in token_usage)
-                        if "cost" in usage and usage["cost"]:  # pragma: no cover
-                            provider_cost = (provider_cost or 0.0) + float(usage["cost"])  # pragma: no cover
-                    else:
-                        # Streaming mode: usage lives in usage_metadata (requires stream_usage=True)
-                        usage_meta = getattr(output, "usage_metadata", None)
-                        if usage_meta and isinstance(usage_meta, dict):  # pragma: no cover
-                            total_input_tokens += usage_meta.get("input_tokens", 0)  # pragma: no cover
-                            total_output_tokens += usage_meta.get("output_tokens", 0)  # pragma: no cover
-                        else:
-                            logger.debug("[COST] on_chat_model_end: no usage data for employee={}, meta_keys={}", self.employee_id, list(meta.keys()))
-                    if not model_used:
-                        model_used = meta.get("model_name", "") or meta.get("model", "")
+        # Retry the stream on transient network failures (e.g. peer closed the
+        # chunked-transfer connection mid-response). Each retry restarts from a
+        # clean LLM client and clears all accumulators.
+        for _attempt in range(_LLM_STREAM_RETRY_ATTEMPTS):
+            if _attempt > 0:
+                final_content = ""
+                total_input_tokens = 0
+                total_output_tokens = 0
+                provider_cost = None
+                model_used = ""
+                last_tool_calls = []
+                last_tool_results = []
+                debug_messages = []
+                self._refresh_agent()
+            try:
+                async for event in self._agent.astream_events(
+                    messages_input, version="v2", config={"recursion_limit": 50},
+                ):
+                    kind = event.get("event", "")
+                    data = event.get("data", {})
+                    if kind == "on_chat_model_start":
+                        inp = data.get("input", "")
+                        if isinstance(inp, list) and inp:
+                            # Capture all input messages for SFT on first LLM call
+                            if not debug_messages:
+                                debug_messages.extend(inp)
+                            last_msg = inp[-1]
+                            if hasattr(last_msg, "content"):
+                                content = last_msg.content or ""
+                                if isinstance(content, str):
+                                    on_log("llm_input", f"[{type(last_msg).__name__}] {content}")
+                                    logger.debug("[LLM INPUT] employee={}: {}", self.employee_id, content[:3000])
+                    elif kind == "on_chat_model_end":
+                        output = data.get("output", None)
+                        if output:
+                            # Capture AI message for Debug trace
+                            debug_messages.append(output)
+                            # Extract token usage — try response_metadata first, then usage_metadata
+                            meta = getattr(output, "response_metadata", {}) or {}
+                            usage = meta.get("usage", {}) or meta.get("token_usage", {}) or {}
+                            if usage:
+                                total_input_tokens += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+                                total_output_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+                                # Provider-reported cost (e.g. OpenRouter includes "cost" in token_usage)
+                                if "cost" in usage and usage["cost"]:  # pragma: no cover
+                                    provider_cost = (provider_cost or 0.0) + float(usage["cost"])  # pragma: no cover
+                            else:
+                                # Streaming mode: usage lives in usage_metadata (requires stream_usage=True)
+                                usage_meta = getattr(output, "usage_metadata", None)
+                                if usage_meta and isinstance(usage_meta, dict):  # pragma: no cover
+                                    total_input_tokens += usage_meta.get("input_tokens", 0)  # pragma: no cover
+                                    total_output_tokens += usage_meta.get("output_tokens", 0)  # pragma: no cover
+                                else:
+                                    logger.debug("[COST] on_chat_model_end: no usage data for employee={}, meta_keys={}", self.employee_id, list(meta.keys()))
+                            if not model_used:
+                                model_used = meta.get("model_name", "") or meta.get("model", "")
 
-                    if hasattr(output, "content"):
-                        text = _extract_text(output.content)
-                        if text.strip():
-                            final_content = text  # track last AI output
-                            on_log("llm_output", text)
-                            logger.debug("[LLM OUTPUT] employee={}: {}", self.employee_id, text[:3000])
-                        tool_calls = getattr(output, "tool_calls", None)
-                        if tool_calls:
-                            last_tool_calls = []
-                            last_tool_results = []
-                            for tc in tool_calls:
-                                name = tc.get("name", "?")
-                                args_dict = tc.get("args", {})
-                                args = str(args_dict)
-                                last_tool_calls.append(name)
-                                on_log("tool_call", {
-                                    "tool_name": name,
-                                    "tool_args": args_dict,
-                                    "content": f"{name}({args})",
-                                })
-                                logger.debug("[TOOL CALL] employee={}: {}({})", self.employee_id, name, args[:1000])
-            elif kind == "on_tool_end":
-                output = data.get("output", "")
-                name = event.get("name", "tool")
-                result_str = str(output)
-                last_tool_results.append(f"{name} → {result_str}")
-                logger.debug("[TOOL RESULT] employee={}: {} → {}", self.employee_id, name, result_str[:2000])
-                on_log("tool_result", {
-                    "tool_name": name,
-                    "tool_result": result_str,
-                    "content": f"{name} → {result_str}",
-                })
-                # Capture ToolMessage for Debug trace
-                raw_output = data.get("output")
-                if raw_output and hasattr(raw_output, "content"):  # pragma: no cover
-                    debug_messages.append(raw_output)  # pragma: no cover
+                            if hasattr(output, "content"):
+                                text = _extract_text(output.content)
+                                if text.strip():
+                                    final_content = text  # track last AI output
+                                    on_log("llm_output", text)
+                                    logger.debug("[LLM OUTPUT] employee={}: {}", self.employee_id, text[:3000])
+                                tool_calls = getattr(output, "tool_calls", None)
+                                if tool_calls:
+                                    last_tool_calls = []
+                                    last_tool_results = []
+                                    for tc in tool_calls:
+                                        name = tc.get("name", "?")
+                                        args_dict = tc.get("args", {})
+                                        args = str(args_dict)
+                                        last_tool_calls.append(name)
+                                        on_log("tool_call", {
+                                            "tool_name": name,
+                                            "tool_args": args_dict,
+                                            "content": f"{name}({args})",
+                                        })
+                                        logger.debug("[TOOL CALL] employee={}: {}({})", self.employee_id, name, args[:1000])
+                    elif kind == "on_tool_end":
+                        output = data.get("output", "")
+                        name = event.get("name", "tool")
+                        result_str = str(output)
+                        last_tool_results.append(f"{name} → {result_str}")
+                        logger.debug("[TOOL RESULT] employee={}: {} → {}", self.employee_id, name, result_str[:2000])
+                        on_log("tool_result", {
+                            "tool_name": name,
+                            "tool_result": result_str,
+                            "content": f"{name} → {result_str}",
+                        })
+                        # Capture ToolMessage for Debug trace
+                        raw_output = data.get("output")
+                        if raw_output and hasattr(raw_output, "content"):  # pragma: no cover
+                            debug_messages.append(raw_output)  # pragma: no cover
+                break  # streaming finished cleanly
+            except Exception as _exc:  # noqa: BLE001 - classify and rethrow non-transient
+                if _attempt + 1 >= _LLM_STREAM_RETRY_ATTEMPTS or not _is_transient_network_error(_exc):
+                    raise
+                _delay = _LLM_STREAM_RETRY_DELAYS[min(_attempt, len(_LLM_STREAM_RETRY_DELAYS) - 1)]
+                logger.warning(
+                    "[LLM RETRY] employee={} transient stream error ({}); attempt {}/{} after {}s",
+                    self.employee_id, _exc, _attempt + 2, _LLM_STREAM_RETRY_ATTEMPTS, _delay,
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(_delay)
 
         # If no text content from LLM, synthesize from last tool calls
         if not final_content.strip() and last_tool_calls:  # pragma: no cover
@@ -1226,7 +1295,25 @@ class EmployeeAgent(BaseAgentRunner):
             SystemMessage(content=self._build_full_prompt()),
             HumanMessage(content=task),
         ]
-        result = await self._agent.ainvoke({"messages": initial_msgs})
+        # Retry transient network failures (peer-closed chunked stream, read
+        # timeout, etc.). LangChain's max_retries only covers the initial
+        # request — mid-stream drops surface here.
+        result = None
+        for _attempt in range(_LLM_STREAM_RETRY_ATTEMPTS):
+            try:
+                result = await self._agent.ainvoke({"messages": initial_msgs})
+                break
+            except Exception as _exc:  # noqa: BLE001 - classify and rethrow non-transient
+                if _attempt + 1 >= _LLM_STREAM_RETRY_ATTEMPTS or not _is_transient_network_error(_exc):
+                    raise
+                _delay = _LLM_STREAM_RETRY_DELAYS[min(_attempt, len(_LLM_STREAM_RETRY_DELAYS) - 1)]
+                logger.warning(
+                    "[LLM RETRY] employee={} transient ainvoke error ({}); attempt {}/{} after {}s",
+                    self.employee_id, _exc, _attempt + 2, _LLM_STREAM_RETRY_ATTEMPTS, _delay,
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(_delay)
+                self._refresh_agent()
 
         usage_info = self._extract_and_record_usage(result)
         final = extract_final_content(result)

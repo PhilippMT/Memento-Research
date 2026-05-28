@@ -509,3 +509,243 @@ class TestSkillConditionalRunbookInjection:
         # task_lifecycle still injected; no crash
         assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
         assert not (skills_dir / "methodology-debate-convener").exists()
+
+
+class TestAdversarialReviewerGetsQualityCritic:
+    """Whoever has adversarial_review must get the methodology-quality-critic
+    runbook auto-injected, so that the Stage 4 critic-side trigger resolves."""
+
+    def test_adversarial_review_employee_gets_quality_critic(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+
+        for skill_name in ("task_lifecycle", "methodology-quality-critic"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+
+        emp_dir = tmp_path / "00099"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- adversarial_review\n- peer_reviewer\nname: Critic\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00099")
+
+        assert (skills_dir / "methodology-quality-critic" / "SKILL.md").exists()
+
+    def test_skill_required_runbooks_includes_adversarial_review(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "adversarial_review" in _SKILL_REQUIRED_RUNBOOKS
+        assert "methodology-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]
+
+
+class TestExperimentSkillRunbooks:
+    """experiment_designer must auto-receive the experiment-debate-convener
+    runbook; adversarial_review must also auto-receive experiment-quality-critic
+    in addition to methodology-quality-critic."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in (
+            "task_lifecycle",
+            "methodology-debate-convener",
+            "methodology-quality-critic",
+            "experiment-debate-convener",
+            "experiment-quality-critic",
+        ):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_experiment_designer_gets_experiment_convener(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00200"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- experiment_designer\nname: ExpDesigner\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00200")
+
+        assert (skills_dir / "experiment-debate-convener" / "SKILL.md").exists()
+
+    def test_adversarial_review_gets_both_quality_critics(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00201"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- adversarial_review\nname: Critic\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00201")
+
+        # Already had this from PR #19
+        assert (skills_dir / "methodology-quality-critic" / "SKILL.md").exists()
+        # NEW: also gets the experiment critic
+        assert (skills_dir / "experiment-quality-critic" / "SKILL.md").exists()
+
+    def test_mapping_includes_experiment_designer(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment_designer" in _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment-debate-convener" in _SKILL_REQUIRED_RUNBOOKS["experiment_designer"]
+
+    def test_adversarial_review_includes_experiment_quality_critic(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]
+
+
+class TestExperimentInfraRunbook:
+    """experiment_runner must auto-receive the experiment-infra runbook
+    so Stage 6 dispatchers can drive the remote experiment API."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "experiment-infra"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_experiment_runner_gets_experiment_infra(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00300"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- experiment_runner\nname: ExpRunner\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00300")
+
+        assert (skills_dir / "experiment-infra" / "SKILL.md").exists()
+
+    def test_non_experiment_runner_employee_does_not_get_experiment_infra(
+        self, tmp_path, monkeypatch
+    ):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00301"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- some_other_skill\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00301")
+
+        assert not (skills_dir / "experiment-infra").exists(), (
+            "Only employees with experiment_runner skill should receive experiment-infra"
+        )
+
+    def test_mapping_includes_experiment_runner(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment_runner" in _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment-infra" in _SKILL_REQUIRED_RUNBOOKS["experiment_runner"]
+
+    def test_experiment_runner_also_gets_execution_runbook(self):
+        """Stage 6 needs both runbooks on the runner — experiment-infra for the
+        HTTP API and experiment-execution-runbook for the assignments-table
+        dispatch logic. One without the other leaves a gap."""
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "experiment-execution-runbook" in _SKILL_REQUIRED_RUNBOOKS["experiment_runner"]
+
+    def test_experiment_runner_gets_both_runbooks_at_inject_time(self, tmp_path, monkeypatch):
+        """End-to-end: a fresh hire with `experiment_runner` skill must end
+        up with both experiment-infra/ and experiment-execution-runbook/ in
+        their skills/ directory after onboarding."""
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "experiment-infra", "experiment-execution-runbook"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+
+        emp_dir = tmp_path / "00400"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- experiment_runner\nname: ExpRunner\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00400")
+
+        assert (skills_dir / "experiment-infra" / "SKILL.md").exists()
+        assert (skills_dir / "experiment-execution-runbook" / "SKILL.md").exists()
+
+
+class TestResultAnalysisRunbook:
+    """result_analyst must auto-receive the result-analysis-runbook
+    so Stage 7 dispatchers can run confirmatory analysis from the
+    pre-registration contract. Mirrors TestExperimentInfraRunbook."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "result-analysis-runbook"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_result_analyst_gets_runbook(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00500"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- result_analyst\nname: ResultAnalyst\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00500")
+
+        assert (skills_dir / "result-analysis-runbook" / "SKILL.md").exists()
+
+    def test_non_result_analyst_does_not_get_runbook(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00501"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- some_other_skill\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00501")
+
+        assert not (skills_dir / "result-analysis-runbook").exists(), (
+            "Only employees with result_analyst skill should receive "
+            "the result-analysis-runbook"
+        )
+
+    def test_mapping_includes_result_analyst(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "result_analyst" in _SKILL_REQUIRED_RUNBOOKS
+        assert "result-analysis-runbook" in _SKILL_REQUIRED_RUNBOOKS["result_analyst"]
+
+    def test_adversarial_review_gets_result_quality_critic(self, tmp_path, monkeypatch):
+        """The Stage 7 critic-side runbook (result-quality-critic) must
+        be injected alongside the existing methodology + experiment
+        quality critics whenever a hire has adversarial_review."""
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in (
+            "task_lifecycle",
+            "methodology-quality-critic",
+            "experiment-quality-critic",
+            "result-quality-critic",
+        ):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+
+        emp_dir = tmp_path / "00502"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- adversarial_review\nname: Critic\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00502")
+
+        # Existing critics must still be present (no regression)
+        assert (skills_dir / "methodology-quality-critic" / "SKILL.md").exists()
+        assert (skills_dir / "experiment-quality-critic" / "SKILL.md").exists()
+        # NEW: Stage 7 critic must also land
+        assert (skills_dir / "result-quality-critic" / "SKILL.md").exists()

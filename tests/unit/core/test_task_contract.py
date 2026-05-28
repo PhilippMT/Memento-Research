@@ -35,7 +35,6 @@ class TestTaskContractDefaults:
     def test_default_protected_paths(self):
         tc = TaskContract(task_id="t1", title="Test", goals=["g"])
         assert ".env" in tc.protected_paths
-        assert "config.yaml" in tc.protected_paths
         assert "company/human_resource/" in tc.protected_paths
 
     def test_default_guardrails(self):

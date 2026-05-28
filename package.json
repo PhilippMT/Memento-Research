@@ -1,9 +1,9 @@
 {
-  "name": "@1mancompany/onemancompany",
-  "version": "0.7.66",
-  "description": "The AI Operating System for One-Person Companies",
+  "name": "@memento-teams/memento-research",
+  "version": "0.1.0",
+  "description": "Adversarial research pipeline powered by OneManCompany",
   "bin": {
-    "onemancompany": "bin/cli.js"
+    "memento-research": "bin/cli.js"
   },
   "files": [
     "bin/cli.js",
@@ -11,28 +11,21 @@
     "frontend/",
     "company/",
     "pyproject.toml",
-    "config.yaml",
     "uv.lock"
   ],
   "keywords": [
     "ai",
-    "agent",
+    "research",
     "multi-agent",
-    "langchain",
-    "company",
-    "one-man-company",
-    "ai-native",
-    "autonomous-agent"
+    "adversarial",
+    "scientific-research"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/1mancompany/OneManCompany.git"
+    "url": "git+https://github.com/Memento-Teams/Memento-Research.git"
   },
-  "homepage": "https://github.com/1mancompany/OneManCompany",
-  "bugs": {
-    "url": "https://github.com/1mancompany/OneManCompany/issues"
-  },
-  "author": "1mancompany",
+  "homepage": "https://github.com/Memento-Teams/Memento-Research",
+  "author": "Memento-Teams",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18"

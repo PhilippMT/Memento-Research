@@ -24,7 +24,7 @@ from rich.text import Text
 SOURCE_ROOT = Path(__file__).parent.parent.parent
 
 from onemancompany.core.config import (
-    COMPANY_TEMPLATE_DIR, CONFIG_YAML_FILENAME,
+    COMPANY_TEMPLATE_DIR,
     DATA_DIR_NAME, DOT_ENV_FILENAME, EMPLOYEES_DIR,
     ENV_KEY_ANTHROPIC, ENV_KEY_ANTHROPIC_AUTH, ENV_KEY_DEFAULT_MODEL,
     ENV_KEY_DEFAULT_PROVIDER, ENV_KEY_HOST, ENV_KEY_OPENROUTER,
@@ -760,40 +760,21 @@ def _step_execute(
             env_lines.append(f"{ENV_KEY_ANTHROPIC_AUTH}={AuthMethod.API_KEY.value}")
     if ENV_KEY_SKILLSMP in extras:
         env_lines.append(f"{ENV_KEY_SKILLSMP}={extras[ENV_KEY_SKILLSMP]}")
+    env_lines.append(f"{ENV_KEY_SANDBOX_ENABLED}={'true' if sandbox_enabled else 'false'}")
+    tm_key = extras.get(ENV_KEY_TALENT_MARKET, "")
+    env_lines.append(f"{ENV_KEY_TALENT_MARKET}={tm_key}")
+    env_lines.append(f"TALENT_MARKET_MODE={'remote' if tm_key else 'local'}")
+    use_ai_val = extras.get("USE_AI_SEARCH", "")
+    env_lines.append(f"TALENT_MARKET_USE_AI_SEARCH={use_ai_val if use_ai_val else 'false'}")
 
     env_path = DATA_ROOT / DOT_ENV_FILENAME
     write_text_utf(env_path, "\n".join(env_lines) + "\n")
     console.print("  [green]\u2714[/green] .env written")
 
-    # 3. Copy config.yaml and inject Talent Market API key if provided
-    src_config = SOURCE_ROOT / CONFIG_YAML_FILENAME
-    dst_config = DATA_ROOT / CONFIG_YAML_FILENAME
-    if src_config.exists() and not dst_config.exists():
-        shutil.copy2(str(src_config), str(dst_config))
-        console.print("  [green]\u2714[/green] config.yaml copied")
-    # Patch config.yaml with user choices
-    if dst_config.exists():
-        import yaml
-        cfg = yaml.safe_load(read_text_utf(dst_config)) or {}
-        # Sandbox toggle
-        cfg.setdefault("tools", {}).setdefault("sandbox", {})["enabled"] = sandbox_enabled
-        # Talent Market API key + mode
-        tm_key = extras.get(ENV_KEY_TALENT_MARKET, "")
-        tm_cfg = cfg.setdefault("talent_market", {})
-        if tm_key:
-            tm_cfg["api_key"] = tm_key
-            tm_cfg["mode"] = "remote"  # API key provided → default to remote
-        else:
-            tm_cfg["mode"] = "local"   # No API key → local mode
-        # AI Search toggle
-        use_ai_val = extras.get("USE_AI_SEARCH", "")
-        if use_ai_val:
-            tm_cfg["use_ai_search"] = use_ai_val == "true"
-        write_text_utf(dst_config, yaml.dump(cfg, default_flow_style=False, allow_unicode=True))
-        if sandbox_enabled:
-            console.print("  [green]\u2714[/green] Sandbox tools enabled")
-        if tm_key:
-            console.print("  [green]\u2714[/green] Talent Market API key saved")
+    if sandbox_enabled:
+        console.print("  [green]\u2714[/green] Sandbox tools enabled")
+    if tm_key:
+        console.print("  [green]\u2714[/green] Talent Market API key saved")
 
     # 4. Sync founding employees' llm_model and api_provider to user-selected defaults
     from onemancompany.core.config import sync_founding_defaults

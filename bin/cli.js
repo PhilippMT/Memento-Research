@@ -14,8 +14,8 @@ const fs = require("fs");
 const os = require("os");
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const REPO_URL = "https://github.com/1mancompany/OneManCompany.git";
-const DIR_NAME = "OneManCompany";
+const REPO_URL = "https://github.com/Memento-Teams/Memento-Research.git";
+const DIR_NAME = "Memento-Research";
 const PYTHON_VERSION = "3.12";
 
 // ── Colors ──────────────────────────────────────────────────────────────────
@@ -327,7 +327,7 @@ ${green("What gets installed automatically:")}
   // ── Install or update ──────────────────────────────────────────────────
   // The npm package bundles the full source. Copy it to installDir.
   // Only fall back to git clone if source is missing (shouldn't happen).
-  const SOURCE_ITEMS = ["src", "frontend", "company", "pyproject.toml", "config.yaml", "uv.lock"];
+  const SOURCE_ITEMS = ["src", "frontend", "company", "pyproject.toml", "uv.lock"];
   const wantUpdate = passthrough.includes("--update");
 
   function copyItems(items, destRoot) {

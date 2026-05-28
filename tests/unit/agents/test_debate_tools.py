@@ -315,6 +315,73 @@ class TestSelectDebateParticipantsTool:
         assert "Selector failed" in result["message"]
 
     @pytest.mark.asyncio
+    async def test_run_debate_passes_mode_to_session(self, monkeypatch):
+        """mode parameter from run_debate tool is forwarded to run_debate_session."""
+        from onemancompany.agents import common_tools as ct_mod
+        from onemancompany.core import state as state_mod
+        from onemancompany.core.debate import DebateResult, DebateRound
+
+        cs = _make_cs()
+        cs.employees["00100"] = _make_emp("00100")
+        cs.employees["00101"] = _make_emp("00101")
+        monkeypatch.setattr(state_mod, "company_state", cs)
+        monkeypatch.setattr(ct_mod, "company_state", cs)
+        _mock_store(monkeypatch, cs)
+
+        fake_result = DebateResult(
+            topic="Topic", participants=["00100", "00101"],
+            rounds=[], conclusion="Verdict.", consensus_reached=True, total_rounds=0,
+        )
+        captured: dict = {}
+
+        async def _fake_session(**kwargs):
+            captured.update(kwargs)
+            return fake_result
+
+        with patch("onemancompany.agents.common_tools.run_debate_session", side_effect=_fake_session), \
+             patch("onemancompany.agents.common_tools._chat", new_callable=AsyncMock):
+            await ct_mod.run_debate.ainvoke({
+                "topic": "Topic",
+                "participant_ids": ["00100", "00101"],
+                "mode": "sequential",
+            })
+
+        assert captured.get("mode") == "sequential"
+
+    @pytest.mark.asyncio
+    async def test_run_debate_default_mode_is_parallel(self, monkeypatch):
+        """When mode is not specified, run_debate_session receives mode='parallel'."""
+        from onemancompany.agents import common_tools as ct_mod
+        from onemancompany.core import state as state_mod
+        from onemancompany.core.debate import DebateResult
+
+        cs = _make_cs()
+        cs.employees["00100"] = _make_emp("00100")
+        cs.employees["00101"] = _make_emp("00101")
+        monkeypatch.setattr(state_mod, "company_state", cs)
+        monkeypatch.setattr(ct_mod, "company_state", cs)
+        _mock_store(monkeypatch, cs)
+
+        fake_result = DebateResult(
+            topic="Topic", participants=["00100", "00101"],
+            rounds=[], conclusion="Verdict.", consensus_reached=True, total_rounds=0,
+        )
+        captured: dict = {}
+
+        async def _fake_session(**kwargs):
+            captured.update(kwargs)
+            return fake_result
+
+        with patch("onemancompany.agents.common_tools.run_debate_session", side_effect=_fake_session), \
+             patch("onemancompany.agents.common_tools._chat", new_callable=AsyncMock):
+            await ct_mod.run_debate.ainvoke({
+                "topic": "Topic",
+                "participant_ids": ["00100", "00101"],
+            })
+
+        assert captured.get("mode") == "parallel"
+
+    @pytest.mark.asyncio
     async def test_unexpected_exception_returns_error(self, monkeypatch):
         from onemancompany.agents import common_tools as ct_mod
         from onemancompany.core import state as state_mod
