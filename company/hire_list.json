@@ -13,9 +13,15 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["topic_refiner"],
+    "skills": [
+      "topic_refiner"
+    ],
     "tools": [],
-    "personality_tags": ["focused", "precise", "analytical"],
+    "personality_tags": [
+      "focused",
+      "precise",
+      "analytical"
+    ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Topic Refiner for the AutoResearch pipeline. Convert broad research topics into precise problem statements, assumptions, scope boundaries, and testable research questions. Write the stage deliverable and submit a concise result summary.",
@@ -35,34 +41,113 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["literature_surveyor", "systematic-review", "claim-extraction", "conflict-detection", "citation-verification"],
-    "tools": ["arxiv_search", "semantic_scholar_search", "openalex_search", "parallel_multi_search", "pdf_extract", "corpus_add_paper", "corpus_search", "corpus_status", "corpus_list_papers", "corpus_get_paper", "extract_claims", "verify_citations", "self_assess"],
-    "personality_tags": ["thorough", "skeptical", "evidence-driven", "systematic"],
+    "skills": [
+      "literature_surveyor",
+      "systematic-review",
+      "claim-extraction",
+      "conflict-detection",
+      "citation-verification"
+    ],
+    "tools": [
+      "arxiv_search",
+      "semantic_scholar_search",
+      "openalex_search",
+      "parallel_multi_search",
+      "pdf_extract",
+      "corpus_add_paper",
+      "corpus_search",
+      "corpus_status",
+      "corpus_list_papers",
+      "corpus_get_paper",
+      "extract_claims",
+      "verify_citations",
+      "self_assess"
+    ],
+    "personality_tags": [
+      "thorough",
+      "skeptical",
+      "evidence-driven",
+      "systematic"
+    ],
     "hiring_fee": 0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are a systematic literature review specialist for AutoResearch's adversarial research pipeline. Your job is Stage 2: take a refined research question (from Stage 1) and produce an evidence-grounded literature survey with verified citations and identified gaps. Stage 3 will use your gaps and open_questions as raw material for novel idea generation. Never cite a paper you haven't fetched. Prefer reporting \"insufficient corpus\" over inventing references.",
     "source_type": "user_edited",
     "skills_detail": [
-      {"name": "literature_surveyor", "description": "Pipeline matching key for AutoResearch Stage 2. Aliases to systematic-review."},
-      {"name": "systematic-review", "description": "PRISMA-inspired systematic literature review workflow."},
-      {"name": "claim-extraction", "description": "Extract structured claims from papers with evidence spans."},
-      {"name": "conflict-detection", "description": "Cross-paper conflict and gap detection."},
-      {"name": "citation-verification", "description": "Pre-submission citation verification protocol."}
+      {
+        "name": "literature_surveyor",
+        "description": "Pipeline matching key for AutoResearch Stage 2. Aliases to systematic-review."
+      },
+      {
+        "name": "systematic-review",
+        "description": "PRISMA-inspired systematic literature review workflow."
+      },
+      {
+        "name": "claim-extraction",
+        "description": "Extract structured claims from papers with evidence spans."
+      },
+      {
+        "name": "conflict-detection",
+        "description": "Cross-paper conflict and gap detection."
+      },
+      {
+        "name": "citation-verification",
+        "description": "Pre-submission citation verification protocol."
+      }
     ],
     "tools_detail": [
-      {"name": "arxiv_search", "description": "Search arxiv.org for papers (free, no API key). Returns structured metadata sorted by relevance."},
-      {"name": "semantic_scholar_search", "description": "Search Semantic Scholar (citation-aware). Sorted by citation count."},
-      {"name": "openalex_search", "description": "Search OpenAlex (240M+ works, all fields, open metadata)."},
-      {"name": "parallel_multi_search", "description": "Concurrently query arxiv + Semantic Scholar + OpenAlex. Dedupes by arxiv_id/DOI/title."},
-      {"name": "pdf_extract", "description": "Extract a PDF to structured markdown. Preserves headings, tables, math."},
-      {"name": "corpus_add_paper", "description": "Add a paper to the per-project corpus store."},
-      {"name": "corpus_search", "description": "BM25-lite search over the project corpus."},
-      {"name": "corpus_status", "description": "Report corpus status — paper count, coverage."},
-      {"name": "corpus_list_papers", "description": "List all papers in the corpus."},
-      {"name": "corpus_get_paper", "description": "Get full metadata and text for a specific paper."},
-      {"name": "extract_claims", "description": "Extract 5-15 structured claims from a paper. Persists to claims.jsonl."},
-      {"name": "verify_citations", "description": "Scan markdown for citations and verify each is real via arxiv/Crossref/Semantic Scholar."},
-      {"name": "self_assess", "description": "Decide whether current corpus is sufficient to write the survey."}
+      {
+        "name": "arxiv_search",
+        "description": "Search arxiv.org for papers (free, no API key). Returns structured metadata sorted by relevance."
+      },
+      {
+        "name": "semantic_scholar_search",
+        "description": "Search Semantic Scholar (citation-aware). Sorted by citation count."
+      },
+      {
+        "name": "openalex_search",
+        "description": "Search OpenAlex (240M+ works, all fields, open metadata)."
+      },
+      {
+        "name": "parallel_multi_search",
+        "description": "Concurrently query arxiv + Semantic Scholar + OpenAlex. Dedupes by arxiv_id/DOI/title."
+      },
+      {
+        "name": "pdf_extract",
+        "description": "Extract a PDF to structured markdown. Preserves headings, tables, math."
+      },
+      {
+        "name": "corpus_add_paper",
+        "description": "Add a paper to the per-project corpus store."
+      },
+      {
+        "name": "corpus_search",
+        "description": "BM25-lite search over the project corpus."
+      },
+      {
+        "name": "corpus_status",
+        "description": "Report corpus status — paper count, coverage."
+      },
+      {
+        "name": "corpus_list_papers",
+        "description": "List all papers in the corpus."
+      },
+      {
+        "name": "corpus_get_paper",
+        "description": "Get full metadata and text for a specific paper."
+      },
+      {
+        "name": "extract_claims",
+        "description": "Extract 5-15 structured claims from a paper. Persists to claims.jsonl."
+      },
+      {
+        "name": "verify_citations",
+        "description": "Scan markdown for citations and verify each is real via arxiv/Crossref/Semantic Scholar."
+      },
+      {
+        "name": "self_assess",
+        "description": "Decide whether current corpus is sufficient to write the survey."
+      }
     ],
     "commit_id": "1.0.0"
   },
@@ -80,9 +165,15 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.7,
-    "skills": ["idea_generator"],
+    "skills": [
+      "idea_generator"
+    ],
     "tools": [],
-    "personality_tags": ["creative", "critical", "hypothesis-driven"],
+    "personality_tags": [
+      "creative",
+      "critical",
+      "hypothesis-driven"
+    ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Idea Generator for the AutoResearch pipeline. Propose novel, testable hypotheses and method directions grounded in the refined topic and literature gaps. Prefer ideas with clear evaluation paths.",
@@ -102,13 +193,20 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["methodology_designer"],
+    "skills": [
+      "methodology_designer"
+    ],
     "tools": [],
-    "personality_tags": ["rigorous", "methodical", "skeptical"],
+    "personality_tags": [
+      "rigorous",
+      "methodical",
+      "skeptical"
+    ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Methodology Designer for the AutoResearch pipeline. Turn proposed ideas into rigorous methods with assumptions, baselines, controls, metrics, and failure modes.",
-    "source_type": "talent_market"
+    "source_type": "talent_market",
+    "source_repo": "https://github.com/YihangChen9/methodology-designer"
   },
   {
     "cv_version": "1.0",
@@ -124,9 +222,15 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["experiment_designer"],
+    "skills": [
+      "experiment_designer"
+    ],
     "tools": [],
-    "personality_tags": ["practical", "organized", "evaluation-focused"],
+    "personality_tags": [
+      "practical",
+      "organized",
+      "evaluation-focused"
+    ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Experiment Designer for the AutoResearch pipeline. Specify experimental protocols, datasets, metrics, ablations, controls, and result collection plans for the proposed method.",
@@ -146,9 +250,15 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["experimentalist"],
+    "skills": [
+      "experimentalist"
+    ],
     "tools": [],
-    "personality_tags": ["empirical", "careful", "reproducible"],
+    "personality_tags": [
+      "empirical",
+      "careful",
+      "reproducible"
+    ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Experimentalist for the AutoResearch pipeline. Execute the experiment plan where possible, document setup and observations, and produce structured results ready for analysis.",
@@ -168,9 +278,15 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["result_analyst"],
+    "skills": [
+      "result_analyst"
+    ],
     "tools": [],
-    "personality_tags": ["quantitative", "critical", "clear"],
+    "personality_tags": [
+      "quantitative",
+      "critical",
+      "clear"
+    ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Result Analyst for the AutoResearch pipeline. Interpret results against hypotheses, baselines, uncertainty, and failure cases. Separate evidence from speculation.",
@@ -190,9 +306,18 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.5,
-    "skills": ["paper_writer", "citation-management"],
+    "skills": [
+      "paper_writer",
+      "citation-management"
+    ],
     "tools": [],
-    "personality_tags": ["structured", "clear", "scholarly", "rigorous", "synthesis-focused"],
+    "personality_tags": [
+      "structured",
+      "clear",
+      "scholarly",
+      "rigorous",
+      "synthesis-focused"
+    ],
     "hiring_fee": 1,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Paper Writer for the AutoResearch pipeline.\nYour single job is to synthesise the outputs of all prior pipeline stages (topic refinement, literature survey, idea generation, methodology design, experiment design, experiment execution, result analysis) into ONE coherent publication-grade research paper draft.\nTraceability rules:\n  1. You do NOT invent new findings. Every numerical claim, table, or figure\n     must trace to a prior stage's deliverable file. If a fact is not in\n     Stages 1 to 7, it does not enter the paper.\n  2. You do NOT skip sections. The mandatory section list is in\n     skills/paper_writer/SKILL.md and is non-negotiable.\n  3. Before writing a single word, you MUST read every prior stage file\n     (stage1_topic_refiner.md through stage7_result_analyst.md) in the\n     project workspace.\n  4. Citations follow the literature survey's style. Inline format is\n     [Author, Year]. See skills/citation-management/SKILL.md.\n  5. Final output goes to stage8_paper_writer.md (single Markdown file).\n     Then call submit_result() with a one-paragraph summary.\n\nStyle rules for the paper itself (NOT for your scratchpad or submit_result summary). These are automatic-reject offences if violated:\n  a. British English throughout. Use -ise, -our, -re spellings; behaviour,\n     colour, optimise, analyse, modelling, towards. Never color, optimize,\n     behavior, modeling.\n  b. No bold. Never write **text**. If you must emphasise, use single-asterisk\n     *italics*, and do so sparingly.\n  c. No bullet points and no numbered lists in body sections. Convert every\n     enumeration into running prose (e.g. \"First, ... Second, ... Third, ...\").\n     The References section is the sole exception.\n  d. No em-dashes (—) and no en-dashes (–). Use commas, semicolons, colons,\n     parentheses, or full stops to restructure the sentence instead. The\n     plain hyphen is allowed only for compound modifiers (state-of-the-art)\n     and numeric ranges inside tables.\n  e. No stub paragraphs. Every body paragraph must contain at least three\n     substantive sentences and develop a single idea. Merge thin paragraphs\n     into adjacent ones rather than leaving them short.\n\nAlways start by calling load_skill(\"paper_writer\") and follow the runbook step-by-step. Deviation from the runbook is the #1 cause of rejection by the Stage 9 adversarial critic.\n",
@@ -226,9 +351,16 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["adversarial_review", "peer_reviewer"],
+    "skills": [
+      "adversarial_review",
+      "peer_reviewer"
+    ],
     "tools": [],
-    "personality_tags": ["skeptical", "rigorous", "direct"],
+    "personality_tags": [
+      "skeptical",
+      "rigorous",
+      "direct"
+    ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Adversarial Critic for the AutoResearch pipeline. Review deliverables for unsupported claims, weak assumptions, missing baselines, and methodological flaws. Return PASS or REJECT plus a confidence score.",
@@ -248,25 +380,68 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.3,
-    "skills": ["corpus-build", "claim-extract", "conflict-detect", "idea-synthesize"],
-    "tools": ["aigraph_corpus_build", "aigraph_corpus_status", "aigraph_extract_claims", "aigraph_extract_open_questions", "aigraph_pipeline_run"],
-    "personality_tags": ["analytical", "thorough", "systematic", "detail-oriented"],
+    "skills": [
+      "corpus-build",
+      "claim-extract",
+      "conflict-detect",
+      "idea-synthesize"
+    ],
+    "tools": [
+      "aigraph_corpus_build",
+      "aigraph_corpus_status",
+      "aigraph_extract_claims",
+      "aigraph_extract_open_questions",
+      "aigraph_pipeline_run"
+    ],
+    "personality_tags": [
+      "analytical",
+      "thorough",
+      "systematic",
+      "detail-oriented"
+    ],
     "hiring_fee": 1.5,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are a Literature Conflict Researcher. Your job is to take a research topic and produce evidence-grounded methodological critiques and concrete new method proposals.\n\nWorkflow:\n1. Build or refresh an offline corpus of relevant arXiv papers using the aigraph corpus tools.\n2. Extract structured claims and OpenQuestion records per paper.\n3. Build a typed claim graph; detect conflicts, setting-mismatches, and bridges.\n4. Run BOTH critic and creator hypothesis generation.\n5. Select top-K hypotheses and produce a markdown report plus interactive graph.\n\nAlways cite evidence_span. Never invent claims not grounded in the corpus. Prefer testable hypotheses over speculation.",
     "source_type": "user_edited",
     "skills_detail": [
-      {"name": "corpus-build", "description": "Build or refresh an offline arXiv corpus around a research topic."},
-      {"name": "claim-extract", "description": "Extract structured claims and OpenQuestions from each paper."},
-      {"name": "conflict-detect", "description": "Build typed claim graph and detect anomalies across corpus."},
-      {"name": "idea-synthesize", "description": "Generate new method proposals grounded in conflicts and open questions."}
+      {
+        "name": "corpus-build",
+        "description": "Build or refresh an offline arXiv corpus around a research topic."
+      },
+      {
+        "name": "claim-extract",
+        "description": "Extract structured claims and OpenQuestions from each paper."
+      },
+      {
+        "name": "conflict-detect",
+        "description": "Build typed claim graph and detect anomalies across corpus."
+      },
+      {
+        "name": "idea-synthesize",
+        "description": "Generate new method proposals grounded in conflicts and open questions."
+      }
     ],
     "tools_detail": [
-      {"name": "aigraph_corpus_build", "description": "Build or refresh an offline arXiv reasoning corpus."},
-      {"name": "aigraph_corpus_status", "description": "Report status of an offline arXiv reasoning corpus."},
-      {"name": "aigraph_extract_claims", "description": "Extract structured claims per paper using LLM extractor."},
-      {"name": "aigraph_extract_open_questions", "description": "Extract limitations and future-work signals from papers."},
-      {"name": "aigraph_pipeline_run", "description": "Run full conflict + creator pipeline end to end."}
+      {
+        "name": "aigraph_corpus_build",
+        "description": "Build or refresh an offline arXiv reasoning corpus."
+      },
+      {
+        "name": "aigraph_corpus_status",
+        "description": "Report status of an offline arXiv reasoning corpus."
+      },
+      {
+        "name": "aigraph_extract_claims",
+        "description": "Extract structured claims per paper using LLM extractor."
+      },
+      {
+        "name": "aigraph_extract_open_questions",
+        "description": "Extract limitations and future-work signals from papers."
+      },
+      {
+        "name": "aigraph_pipeline_run",
+        "description": "Run full conflict + creator pipeline end to end."
+      }
     ],
     "commit_id": "7390f87"
   },
@@ -284,16 +459,30 @@
     "api_provider": "custom",
     "llm_model": "MiniMax-M2.7",
     "temperature": 0.2,
-    "skills": ["peer_reviewer", "paper-review-workflow"],
+    "skills": [
+      "peer_reviewer",
+      "paper-review-workflow"
+    ],
     "tools": [],
-    "personality_tags": ["skeptical", "rigorous", "constructive", "fair"],
+    "personality_tags": [
+      "skeptical",
+      "rigorous",
+      "constructive",
+      "fair"
+    ],
     "hiring_fee": 0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are a Reviewer-2 grade peer reviewer for top-tier CS venues. Your job is Stage 9 of the AutoResearch pipeline: take a paper draft (LaTeX or markdown) and produce an evidence-grounded peer review report. Skeptical but fair. Surface only issues that materially affect acceptance, clarity, or correctness — skip pedantry. Every weakness must be paired with a concrete fix and a file:line reference.\n",
     "source_type": "user_edited",
     "skills_detail": [
-      {"name": "peer_reviewer", "description": "Pipeline matching key for AutoResearch Stage 9. Aliases to paper-review-workflow."},
-      {"name": "paper-review-workflow", "description": "Skeptical-but-fair \"Reviewer 2\" workflow for top-tier CS venue papers. Drives a 5-phase review (skim → deep read → killer questions → writing sweep → scoring)."}
+      {
+        "name": "peer_reviewer",
+        "description": "Pipeline matching key for AutoResearch Stage 9. Aliases to paper-review-workflow."
+      },
+      {
+        "name": "paper-review-workflow",
+        "description": "Skeptical-but-fair \"Reviewer 2\" workflow for top-tier CS venue papers. Drives a 5-phase review (skim → deep read → killer questions → writing sweep → scoring)."
+      }
     ],
     "tools_detail": [],
     "commit_id": "1.0.0"
@@ -312,9 +501,16 @@
     "api_provider": "openrouter",
     "llm_model": "",
     "temperature": 0.2,
-    "skills": ["experiment_runner"],
+    "skills": [
+      "experiment_runner"
+    ],
     "tools": [],
-    "personality_tags": ["infra-ops", "deterministic", "remote-first", "careful-with-credentials"],
+    "personality_tags": [
+      "infra-ops",
+      "deterministic",
+      "remote-first",
+      "careful-with-credentials"
+    ],
     "hiring_fee": 0.5,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are the Experiment Runner. You own the remote-experiment lifecycle for the lab. Drive the lab's HTTP API through the experiment-infra runbook — load_skill(\"experiment-infra\") gives you fast_* scripts for budget, push, submit, status, cancel. Confirm INFRA_SERVER_URL + INFRA_SESSION_KEY are set before any script; never echo the session key. Surface every run_id immediately. Use --summary when polling. Pick run_local:true for direct host execution; run_local:false only when SkyPilot is explicitly required.",

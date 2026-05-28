@@ -9,60 +9,14 @@ from pathlib import Path
 
 
 SKILLS_ROOT = Path(__file__).resolve().parents[3] / "src" / "onemancompany" / "default_skills"
-CONVENER = SKILLS_ROOT / "methodology-debate-convener" / "SKILL.md"
 QUALITY_CRITIC = SKILLS_ROOT / "methodology-quality-critic" / "SKILL.md"
 
-
-# ---------------------------------------------------------------------------
-# methodology-debate-convener — draft → debate → revise flow
-# ---------------------------------------------------------------------------
-
-class TestConvenerSkillStructure:
-    def test_file_exists(self):
-        assert CONVENER.exists()
-
-    def test_has_initial_draft_phase(self):
-        text = CONVENER.read_text(encoding="utf-8")
-        assert "Phase 3: Write the Initial Methodology Draft" in text, (
-            "Stage 4 producer must write a v1 draft BEFORE the debate runs — "
-            "the debate needs a concrete target to critique."
-        )
-        assert "stage4_methodology_v1_draft.md" in text
-
-    def test_critique_topic_attacks_the_draft(self):
-        text = CONVENER.read_text(encoding="utf-8")
-        # Phase 4 should explicitly frame the debate as "critique the draft"
-        assert "Phase 4: Phrase the Critique Topic" in text
-        assert "critique of the v1 draft" in text
-
-    def test_final_phase_is_revise_not_write_from_scratch(self):
-        text = CONVENER.read_text(encoding="utf-8")
-        assert "Phase 7: Revise" in text
-        assert "Start from the v1 draft, do not rewrite from scratch" in text
-
-    def test_mentions_ccf_a_quality_bar(self):
-        text = CONVENER.read_text(encoding="utf-8")
-        assert "CCF-A" in text, (
-            "The final write phase must call out the CCF-A quality bar explicitly."
-        )
-
-    def test_lists_all_eight_required_sections(self):
-        text = CONVENER.read_text(encoding="utf-8")
-        for section_name in (
-            "Research Question",
-            "Hypotheses",
-            "Variables",
-            "Experimental Design",
-            "Evaluation Metrics",
-            "Threats to Validity",
-            "Alternatives Considered",
-            "Open Questions",
-        ):
-            assert section_name in text
-
-    def test_transcript_saved_before_revise(self):
-        text = CONVENER.read_text(encoding="utf-8")
-        assert "stage4_debate_transcript.md" in text
+# Note: methodology-debate-convener no longer lives in this repo. It is
+# hosted as a separate Talent Market repo at
+# https://github.com/YihangChen9/methodology-designer (cloned at hire time
+# via hire_list.json source_repo). Tests that previously asserted its
+# contents were removed alongside the deleted default_skills/ entry — they
+# now belong in the talent repo itself.
 
 
 # ---------------------------------------------------------------------------
@@ -105,29 +59,6 @@ class TestQualityCriticSkillStructure:
 # ---------------------------------------------------------------------------
 
 class TestEnglishDefaultAndLanguageDimension:
-    def test_convener_phase_3_requires_english_output(self):
-        """The initial draft (Phase 3) must be specified to be in English so
-        downstream stages and the critic can apply a single style standard."""
-        text = CONVENER.read_text(encoding="utf-8")
-        # Heading must exist + explicit English requirement nearby
-        assert "Phase 3: Write the Initial Methodology Draft" in text
-        # Search for the English mandate (case-insensitive on phrase)
-        lower = text.lower()
-        assert "english" in lower, (
-            "Convener must default the methodology output language to English "
-            "regardless of upstream stage language."
-        )
-
-    def test_convener_phase_7_has_writing_style_guidance(self):
-        """Final revise phase needs explicit writing-style rules so producers
-        avoid the academic-prose pitfalls D9 will check against."""
-        text = CONVENER.read_text(encoding="utf-8")
-        # Phase 7 should mention writing-style topics
-        for keyword in ("notation", "terminology", "topic sentence"):
-            assert keyword.lower() in text.lower(), (
-                f"Phase 7 should mention {keyword!r} as part of writing style"
-            )
-
     def test_critic_has_d9_language_and_style(self):
         text = QUALITY_CRITIC.read_text(encoding="utf-8")
         assert "D9" in text, "Critic must include a D9 dimension for language/style"

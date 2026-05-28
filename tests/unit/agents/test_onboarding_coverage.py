@@ -429,22 +429,34 @@ class TestCopyClaudeMd:
 # (regression for bug found in PR #15 smoke test)
 # ---------------------------------------------------------------------------
 
-class TestSkillConditionalRunbookInjection:
-    """A user with the methodology_designer skill must have the
-    methodology-debate-convener runbook auto-injected, so that the Stage 4
-    pipeline trigger (load_skill) actually resolves at runtime.
+class TestMethodologyDesignerTalentMarketSourced:
+    """methodology-debate-convener no longer lives in this repo. It ships
+    with the methodology-designer talent at
+    https://github.com/YihangChen9/methodology-designer and is fetched at
+    hire time via hire_list.json `source_repo` → `clone_talent_repo`.
+
+    These tests pin the post-migration invariants:
+      1. The runbook is NOT injected via `_inject_default_skills` (the
+         default_skills/ entry was removed).
+      2. `_SKILL_REQUIRED_RUNBOOKS` no longer maps methodology_designer.
+      3. hire_list.json carries the source_repo URL for the talent.
     """
 
     def _setup_default_skills(self, tmp_path, monkeypatch):
         import onemancompany.agents.onboarding as ob_mod
         monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
-        for skill_name in ("task_lifecycle", "methodology-debate-convener"):
+        # Only task_lifecycle here — methodology-debate-convener is
+        # intentionally absent from default_skills now.
+        for skill_name in ("task_lifecycle",):
             src_dir = tmp_path / "default_skills" / skill_name
             src_dir.mkdir(parents=True)
             (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent for {skill_name}")
         return ob_mod
 
-    def test_inject_methodology_runbook_when_skill_present(self, tmp_path, monkeypatch):
+    def test_inject_does_not_pull_methodology_runbook(self, tmp_path, monkeypatch):
+        """Even if employee carries methodology_designer skill, the runbook
+        must NOT come from _inject_default_skills — it comes from the
+        talent clone instead."""
         ob_mod = self._setup_default_skills(tmp_path, monkeypatch)
         emp_dir = tmp_path / "00006"
         skills_dir = emp_dir / "skills"
@@ -455,47 +467,38 @@ class TestSkillConditionalRunbookInjection:
 
         ob_mod._inject_default_skills(skills_dir, employee_id="00006")
 
-        assert (skills_dir / "methodology-debate-convener" / "SKILL.md").exists(), (
-            "methodology_designer skill must trigger methodology-debate-convener runbook injection"
-        )
-        # task_lifecycle is the universal default — still injected
+        # Universal default is still injected
         assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
-
-    def test_does_not_inject_methodology_runbook_without_skill(self, tmp_path, monkeypatch):
-        ob_mod = self._setup_default_skills(tmp_path, monkeypatch)
-        emp_dir = tmp_path / "00007"
-        skills_dir = emp_dir / "skills"
-        skills_dir.mkdir(parents=True)
-        (emp_dir / "profile.yaml").write_text(
-            "skills:\n- topic_refiner\nname: Topic Refiner\n"
-        )
-
-        ob_mod._inject_default_skills(skills_dir, employee_id="00007")
-
+        # But the methodology runbook is NOT — it's the talent's job to
+        # ship it via clone_talent_repo + copy_talent_assets.
         assert not (skills_dir / "methodology-debate-convener").exists(), (
-            "Employees without methodology_designer skill must NOT receive the convener runbook"
+            "methodology-debate-convener must NOT be injected from default_skills/ "
+            "after the talent-market migration"
         )
 
-    def test_inject_with_explicit_skills_arg_does_not_need_profile(self, tmp_path, monkeypatch):
-        """Caller can pass employee_skills directly (avoids re-reading profile.yaml
-        during hiring, where the skills list is already in memory)."""
-        ob_mod = self._setup_default_skills(tmp_path, monkeypatch)
-        skills_dir = tmp_path / "fresh" / "skills"
-        skills_dir.mkdir(parents=True)
-        # NOTE: no profile.yaml on disk
-
-        ob_mod._inject_default_skills(
-            skills_dir, employee_id="00008", employee_skills=["methodology_designer"]
-        )
-
-        assert (skills_dir / "methodology-debate-convener" / "SKILL.md").exists()
-
-    def test_skill_required_runbooks_mapping_exists(self):
-        """The mapping is the SSOT for skill → required runbook injection.
-        Adding a new convener-style skill should only require editing this dict."""
+    def test_methodology_designer_not_in_required_runbooks(self):
+        """The map must NOT list methodology_designer — the runbook ships
+        with the talent (via hire_list source_repo). Re-adding it here
+        would cause _inject_default_skills to look for the runbook in
+        default_skills/, where it no longer lives, and emit a noisy warning
+        on every hire."""
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
-        assert "methodology_designer" in _SKILL_REQUIRED_RUNBOOKS
-        assert "methodology-debate-convener" in _SKILL_REQUIRED_RUNBOOKS["methodology_designer"]
+        assert "methodology_designer" not in _SKILL_REQUIRED_RUNBOOKS
+
+    def test_hire_list_carries_source_repo(self):
+        """hire_list.json must record the GitHub URL so _do_cv_hire skips
+        the talent_market.onboard() lookup and clones directly. Without
+        this, the OMC server depends on the talent market service being
+        live + having the talent registered."""
+        import json
+        repo_root = Path(__file__).resolve().parents[3]
+        with open(repo_root / "company" / "hire_list.json") as f:
+            entries = json.load(f)
+        md_entry = next((e for e in entries if e.get("talent_id") == "methodology-designer"), None)
+        assert md_entry is not None, "methodology-designer missing from hire_list.json"
+        assert md_entry.get("source_repo", "").startswith("https://github.com/"), (
+            "hire_list.json methodology-designer entry must carry source_repo URL"
+        )
 
     def test_missing_profile_yaml_is_graceful(self, tmp_path, monkeypatch):
         """If profile.yaml is missing and no employee_skills passed, function

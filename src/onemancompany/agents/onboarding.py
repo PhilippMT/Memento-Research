@@ -76,8 +76,14 @@ _EA_SKILL_NAMES = ["project-brainstorming"]
 # from default_skills/ are injected into their skills/ directory so that
 # load_skill(<runbook>) can resolve at runtime. This is the SSOT for the
 # pattern; adding a new convener-style skill is one-line dict edit.
+#
+# Skills whose runbook ships with the talent itself (cloned from the
+# Talent Market) are NOT listed here — the talent-clone step in
+# `add_or_update_employee` already copies them. Currently:
+#   - methodology_designer → runbook lives at
+#     https://github.com/YihangChen9/methodology-designer (via hire_list
+#     source_repo + clone_talent_repo).
 _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
-    "methodology_designer": ["methodology-debate-convener"],
     "experiment_designer": ["experiment-debate-convener"],
     "experiment_runner": ["experiment-infra", "experiment-execution-runbook"],
     "result_analyst": ["result-analysis-runbook"],
