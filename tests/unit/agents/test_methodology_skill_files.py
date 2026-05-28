@@ -84,63 +84,11 @@ class TestEnglishDefaultAndLanguageDimension:
 # Stage 5 SKILL files — experiment-debate-convener + experiment-quality-critic
 # ---------------------------------------------------------------------------
 
-EXP_CONVENER = SKILLS_ROOT / "experiment-debate-convener" / "SKILL.md"
+# experiment-debate-convener was moved to the talent repo at
+# https://github.com/YihangChen9/experiment-designer; its content tests
+# live in the talent repo now.
 EXP_CRITIC = SKILLS_ROOT / "experiment-quality-critic" / "SKILL.md"
 
-
-class TestExperimentConvenerSkill:
-    def test_file_exists(self):
-        assert EXP_CONVENER.exists()
-
-    def test_has_draft_debate_revise_phases(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        assert "Phase 3: Write the Initial Experiment Plan Draft" in text
-        assert "Phase 4: Phrase the Critique Topic" in text
-        assert "Phase 7: Revise" in text
-
-    def test_has_coordination_phase_producing_assignments(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        assert "Phase 8: Produce the Coordination Assignments Table" in text
-        assert "stage5_assignments.md" in text
-        assert "分工表" in text or "assignments table" in text.lower()
-
-    def test_requires_english_output(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        assert "English" in text
-
-    def test_lists_all_10_required_sections(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        for section in (
-            "Experiment Objective",
-            "Variables & Operationalisation",
-            "Experimental Procedure",
-            "Evaluation Metrics",
-            "Sample Size & Power",
-            "Pre-registration Spec",
-            "Data Pipeline",
-            "Failure Modes",
-            "Reproducibility",
-            "Citation of the Debate",
-        ):
-            # accept Operationalisation OR Operationalization spelling
-            haystack = text.replace("Operationalization", "Operationalisation")
-            assert section in haystack, f"missing section heading {section!r}"
-
-    def test_assignments_table_has_required_columns(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        # the example shows the required columns
-        for col in ("Task", "Assignee", "Due", "Acceptance criterion"):
-            assert col in text
-
-    def test_artifacts_paths_specified(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        for path in (
-            "stage5_experiment_v1_draft.md",
-            "stage5_experiment_designer.md",
-            "stage5_debate_transcript.md",
-            "stage5_assignments.md",
-        ):
-            assert path in text
 
 
 class TestExperimentCriticSkill:

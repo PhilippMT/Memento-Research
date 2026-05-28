@@ -205,8 +205,7 @@
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Methodology Designer for the AutoResearch pipeline. Turn proposed ideas into rigorous methods with assumptions, baselines, controls, metrics, and failure modes.",
-    "source_type": "talent_market",
-    "source_repo": "https://github.com/YihangChen9/methodology-designer"
+    "source_type": "talent_market"
   },
   {
     "cv_version": "1.0",

@@ -14,7 +14,8 @@ from pathlib import Path
 
 SKILLS_ROOT = Path(__file__).resolve().parents[3] / "src" / "onemancompany" / "default_skills"
 EXPERIMENT_INFRA = SKILLS_ROOT / "experiment-infra"
-EXP_CONVENER = SKILLS_ROOT / "experiment-debate-convener" / "SKILL.md"
+# experiment-debate-convener moved to talent repo; convener-side tests
+# live there now.
 EXP_CRITIC = SKILLS_ROOT / "experiment-quality-critic" / "SKILL.md"
 
 
@@ -128,17 +129,7 @@ class TestStage5WiringToExperimentInfra:
     """Stage 5 SKILL.md files must mention the runner / experiment-infra path
     so the producer + critic know remote-execution tasks need a runner."""
 
-    def test_convener_mentions_experiment_runner_in_team_assembly(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        assert "experiment_runner" in text
-        assert "experiment-infra" in text
 
-    def test_convener_coordination_rules_require_runner_for_remote_tasks(self):
-        text = EXP_CONVENER.read_text(encoding="utf-8")
-        assert "fast_submit.sh" in text, (
-            "Coordination rules should name the experiment-infra script so Stage 6 "
-            "knows the assignment format for remote-execution tasks"
-        )
 
     def test_critic_d10_checks_runner_assignment(self):
         text = EXP_CRITIC.read_text(encoding="utf-8")
