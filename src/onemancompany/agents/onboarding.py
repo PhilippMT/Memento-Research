@@ -79,13 +79,18 @@ _EA_SKILL_NAMES = ["project-brainstorming"]
 #
 # Skills whose runbook ships with the talent itself (cloned from the
 # Talent Market) are NOT listed here — the talent-clone step in
-# `add_or_update_employee` already copies them. Currently three talents
+# `add_or_update_employee` already copies them. Currently five talents
 # follow this pattern (resolved via talent_market.onboard() → clone):
 #   - methodology_designer → https://github.com/YihangChen9/methodology-designer
 #   - experiment_designer  → https://github.com/YihangChen9/experiment-designer
 #   - result_analyst       → https://github.com/YihangChen9/result-analyst
+#   - code_implementer     → https://github.com/YihangChen9/experiment-team
+#   - experiment_runner    → https://github.com/YihangChen9/experiment-team
+# Only runbooks that still live in `default_skills/` and need to be
+# injected onto talents that don't bundle them belong in this map. Right
+# now only the adversarial-reviewer critic stack (used by the
+# `adversarial_review` employee) is still in `default_skills/`.
 _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
-    "experiment_runner": ["experiment-infra", "experiment-execution-runbook"],
     "adversarial_review": [
         "methodology-quality-critic",
         "experiment-quality-critic",

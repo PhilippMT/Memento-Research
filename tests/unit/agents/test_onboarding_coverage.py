@@ -633,21 +633,25 @@ class TestExperimentDesignerTalentMarketSourced:
         )
 
 
-class TestExperimentInfraRunbook:
-    """experiment_runner must auto-receive the experiment-infra runbook
-    so Stage 6 dispatchers can drive the remote experiment API."""
+class TestExperimentRunnerTalentMarketSourced:
+    """experiment-infra + experiment-execution-runbook moved to the
+    multi-talent repo at https://github.com/YihangChen9/experiment-team.
+    Pins post-migration invariants for both experiment_runner and
+    code_implementer skills (Stage 6 execution + implementation
+    sub-phases)."""
 
-    def _setup(self, tmp_path, monkeypatch):
+    def _setup_default_skills_minus_stage6(self, tmp_path, monkeypatch):
         import onemancompany.agents.onboarding as ob_mod
         monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
-        for skill_name in ("task_lifecycle", "experiment-infra"):
+        # Only universals + critics. Stage 6 runbooks deliberately absent.
+        for skill_name in ("task_lifecycle",):
             src_dir = tmp_path / "default_skills" / skill_name
             src_dir.mkdir(parents=True)
             (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
         return ob_mod
 
-    def test_experiment_runner_gets_experiment_infra(self, tmp_path, monkeypatch):
-        ob_mod = self._setup(tmp_path, monkeypatch)
+    def test_experiment_runner_no_runbooks_from_default_skills(self, tmp_path, monkeypatch):
+        ob_mod = self._setup_default_skills_minus_stage6(tmp_path, monkeypatch)
         emp_dir = tmp_path / "00300"
         skills_dir = emp_dir / "skills"
         skills_dir.mkdir(parents=True)
@@ -657,57 +661,40 @@ class TestExperimentInfraRunbook:
 
         ob_mod._inject_default_skills(skills_dir, employee_id="00300")
 
-        assert (skills_dir / "experiment-infra" / "SKILL.md").exists()
-
-    def test_non_experiment_runner_employee_does_not_get_experiment_infra(
-        self, tmp_path, monkeypatch
-    ):
-        ob_mod = self._setup(tmp_path, monkeypatch)
-        emp_dir = tmp_path / "00301"
-        skills_dir = emp_dir / "skills"
-        skills_dir.mkdir(parents=True)
-        (emp_dir / "profile.yaml").write_text("skills:\n- some_other_skill\n")
-
-        ob_mod._inject_default_skills(skills_dir, employee_id="00301")
-
+        assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
         assert not (skills_dir / "experiment-infra").exists(), (
-            "Only employees with experiment_runner skill should receive experiment-infra"
+            "experiment-infra must come from the talent clone, not "
+            "_inject_default_skills"
         )
+        assert not (skills_dir / "experiment-execution-runbook").exists()
 
-    def test_mapping_includes_experiment_runner(self):
+    def test_experiment_runner_not_in_required_runbooks(self):
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
-        assert "experiment_runner" in _SKILL_REQUIRED_RUNBOOKS
-        assert "experiment-infra" in _SKILL_REQUIRED_RUNBOOKS["experiment_runner"]
+        assert "experiment_runner" not in _SKILL_REQUIRED_RUNBOOKS
 
-    def test_experiment_runner_also_gets_execution_runbook(self):
-        """Stage 6 needs both runbooks on the runner — experiment-infra for the
-        HTTP API and experiment-execution-runbook for the assignments-table
-        dispatch logic. One without the other leaves a gap."""
+    def test_code_implementer_not_in_required_runbooks(self):
+        """Stage 6 implementation sub-phase routes to code_implementer.
+        Like experiment_runner, the runbook ships with the talent."""
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
-        assert "experiment-execution-runbook" in _SKILL_REQUIRED_RUNBOOKS["experiment_runner"]
+        assert "code_implementer" not in _SKILL_REQUIRED_RUNBOOKS
 
-    def test_experiment_runner_gets_both_runbooks_at_inject_time(self, tmp_path, monkeypatch):
-        """End-to-end: a fresh hire with `experiment_runner` skill must end
-        up with both experiment-infra/ and experiment-execution-runbook/ in
-        their skills/ directory after onboarding."""
-        import onemancompany.agents.onboarding as ob_mod
-        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
-        for skill_name in ("task_lifecycle", "experiment-infra", "experiment-execution-runbook"):
-            src_dir = tmp_path / "default_skills" / skill_name
-            src_dir.mkdir(parents=True)
-            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+    def test_hire_list_runner_uses_talent_market_source(self):
+        import json
+        repo_root = Path(__file__).resolve().parents[3]
+        with open(repo_root / "company" / "hire_list.json") as f:
+            entries = json.load(f)
+        entry = next((e for e in entries if e.get("talent_id") == "experiment-runner"), None)
+        assert entry is not None, "experiment-runner missing from hire_list.json"
+        assert entry.get("source_type") == "talent_market"
 
-        emp_dir = tmp_path / "00400"
-        skills_dir = emp_dir / "skills"
-        skills_dir.mkdir(parents=True)
-        (emp_dir / "profile.yaml").write_text(
-            "skills:\n- experiment_runner\nname: ExpRunner\n"
-        )
-
-        ob_mod._inject_default_skills(skills_dir, employee_id="00400")
-
-        assert (skills_dir / "experiment-infra" / "SKILL.md").exists()
-        assert (skills_dir / "experiment-execution-runbook" / "SKILL.md").exists()
+    def test_hire_list_code_writer_uses_talent_market_source(self):
+        import json
+        repo_root = Path(__file__).resolve().parents[3]
+        with open(repo_root / "company" / "hire_list.json") as f:
+            entries = json.load(f)
+        entry = next((e for e in entries if e.get("talent_id") == "experiment-code-writer"), None)
+        assert entry is not None, "experiment-code-writer missing from hire_list.json"
+        assert entry.get("source_type") == "talent_market"
 
 
 class TestResultAnalystTalentMarketSourced:
