@@ -186,7 +186,7 @@ def reset_session(employee_id: str, project_id: str) -> None:
             try:
                 proc.terminate()
             except ProcessLookupError:
-                pass
+                logger.debug("[claude-session] reset_session: proc already exited for {}:{}", employee_id, project_id)
         daemon.proc = None
     sessions = _load_sessions(employee_id)
     if project_id in sessions:
