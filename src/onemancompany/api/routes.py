@@ -1024,7 +1024,9 @@ async def list_pipeline_branches(project_id: str):
 @router.get("/api/pipeline/{project_id}/status")
 async def pipeline_status(project_id: str):
     """Get current pipeline state for a project."""
-    from onemancompany.core.pipeline_engine import get_or_load_pipeline, STAGES
+    from onemancompany.core.pipeline_engine import (
+        get_or_load_pipeline, _load_state, STAGES,
+    )
     from onemancompany.core.project_archive import get_project_dir
 
     pdir = str(get_project_dir(project_id))
@@ -1032,6 +1034,21 @@ async def pipeline_status(project_id: str):
 
     if not engine:
         return {"error": "No pipeline found", "stages": STAGES}
+
+    # Refresh stage_results / critic_result / phase from disk. The engine's
+    # in-memory state lags whenever a subprocess producer (e.g. an openclaw
+    # talent) writes pipeline_state.yaml outside the engine's own write
+    # path. Without this re-read the UI shows phase=producer with empty
+    # stage_results long after the deliverable has been persisted. The
+    # `phase` / `current_stage` properties read off state, so updating
+    # state alone is enough.
+    if pdir:
+        disk = _load_state(pdir)
+        if disk:
+            for key in ("phase", "current_stage", "retries", "stage_results",
+                        "critic_result", "start_stage", "end_stage"):
+                if key in disk:
+                    engine.state[key] = disk[key]
 
     # Collect workspace files
     ws_files = []

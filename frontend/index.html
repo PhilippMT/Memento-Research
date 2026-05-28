@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="/vendor/d3.v7.min.js" defer></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -268,6 +269,15 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .lcg-anom-type{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
 .lcg-ref{display:inline-block;background:var(--green-subtle);color:var(--green);padding:0 4px;border-radius:3px;font-family:var(--mono);font-size:.95em;cursor:help}
 .lcg-ref:hover{background:var(--green);color:var(--white)}
+.lcg-graph-container{margin:0 0 14px;border:1px solid var(--border-light);border-radius:var(--r);background:linear-gradient(180deg,var(--white) 0%,#fafbff 100%)}
+.lcg-graph-summary{cursor:pointer;padding:8px 12px;font-family:var(--mono);font-size:.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;list-style:none;user-select:none;display:flex;align-items:center;gap:6px}
+.lcg-graph-summary::-webkit-details-marker{display:none}
+.lcg-graph-summary::before{content:"▸";color:var(--text3);transition:transform .15s;display:inline-block}
+.lcg-graph-container[open]>.lcg-graph-summary::before{transform:rotate(90deg)}
+.lcg-graph-container[open]>.lcg-graph-summary{border-bottom:1px dashed var(--border-light)}
+.lcg-graph-body{padding:8px 12px}
+.lcg-graph-svg{width:100%;height:auto;display:block;max-height:380px}
+.lcg-graph-planet:hover circle{stroke-width:3;filter:brightness(1.1)}
 .lcg-popup{position:absolute;display:none;z-index:9999;max-width:380px;background:var(--white);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:.74rem;line-height:1.5;color:var(--text2);pointer-events:none}
 .lcg-pop-title{font-weight:600;color:var(--text);margin-bottom:6px;display:flex;align-items:baseline;gap:6px}
 .lcg-pop-row{margin:4px 0}
@@ -564,6 +574,126 @@ function _getProject(pid) {
   return _projects.get(pid);
 }
 
+// Pull stage_results from /api/pipeline/{pid}/status and rebuild stage cards
+// in-place. Fires fire-and-forget from switchProject when the project has no
+// cached stagesHtml (typical for projects whose live WebSocket events landed
+// in a different browser session — e.g. after a page reload, or for projects
+// created via API rather than the launch form).
+async function hydrateProjectFromBackend(pid) {
+  const client = window._omcClient;
+  if (!client || typeof client.getPipelineStatus !== 'function') return;
+  let status;
+  try {
+    status = await client.getPipelineStatus(pid);
+  } catch (err) {
+    console.warn('[hydrate] pipeline status failed for', pid, err);
+    return;
+  }
+  if (!status) return;
+  // Abort if user switched away while the fetch was in flight.
+  if (_activeProjectId !== pid) return;
+
+  // Workspace files come from a fresh disk scan, so they're useful even
+  // when stage_results / critic_result are stale (engine in-memory cache
+  // bug). Backfill them first, before we decide whether to early-return
+  // on missing stage_results.
+  if (Array.isArray(status.workspace_files) && status.workspace_files.length) {
+    status.workspace_files.forEach(f => addWorkspaceFile(f));
+  }
+
+  const stageResults = status.stage_results || {};
+  const completedIds = Object.keys(stageResults)
+    .map(s => parseInt(s, 10))
+    .filter(n => !Number.isNaN(n))
+    .sort((a, b) => a - b);
+  if (!completedIds.length) return;
+
+  const currentStage = status.current_stage || completedIds[completedIds.length - 1];
+  const phase = status.phase;
+
+  const topic = status.topic || '';
+  completedIds.forEach(sid => {
+    const meta = STAGES.find(s => s.id === sid);
+    if (!meta) return;
+    const cardId = `stage${sid}`;  // match pipeline-controller._ensureCard
+    getStageCard(cardId, `Stage ${sid} — ${meta.name}`, meta.name, meta.name.slice(0, 2).toUpperCase());
+    // The new idea-construction prompt no longer prefixes Stage 3 markdown
+    // with a `# Stage 3: — {topic}` heading, so the lcg renderer's topic
+    // parser can't see the project topic. Inject it ourselves when missing
+    // so both the advisor block and the conflict graph render correctly.
+    let content = stageResults[String(sid)] || '';
+    if (topic && !/^#\s+Stage \d+:/m.test(content)) {
+      content = `# Stage ${sid}: ${meta.name} — ${topic}\n\n${content}`;
+    }
+    updateProducer(cardId, content);
+    const isCurrent = sid === currentStage;
+    // Backend phase is producer|critic|gate|done|failed (pipeline_engine.py),
+    // never 'reviewing'. Map it to the UI status so a hydrated project sitting
+    // at the critic/gate step is restored correctly instead of showing 'running'.
+    const _phaseUi = { producer: 'running', critic: 'reviewing', gate: 'gate', failed: 'failed' };
+    if (isCurrent && phase && phase !== 'done') {
+      const ui = _phaseUi[phase] || 'running';
+      setCardStatus(cardId, ui);
+      setStage(sid, ui);
+    } else {
+      setCardStatus(cardId, 'done');
+      setStage(sid, 'done');
+    }
+  });
+
+  if (status.critic_result) {
+    updateCritic(`stage${currentStage}`, status.critic_result);
+  }
+
+  // Backfill the workspace panel. Live runs fill it via `file_written`
+  // WebSocket events; on a hydrated historical project there are no such
+  // events. Prefer the backend's freshly-scanned workspace_files list
+  // (status.workspace_files, real on-disk files) — that path also works
+  // when the engine's in-memory stage_results is stale. Fall back to
+  // synthesising entries from stage_results / critic_result when the
+  // backend didn't include workspace_files.
+  if (Array.isArray(status.workspace_files) && status.workspace_files.length) {
+    status.workspace_files.forEach(f => addWorkspaceFile(f));
+  } else {
+    const stageSkillMap = {
+      1: 'topic_refiner', 2: 'literature_surveyor', 3: 'idea_generator',
+      4: 'methodology_designer', 5: 'experiment_designer', 6: 'experimentalist',
+      7: 'result_analyst', 8: 'paper_writer', 9: 'self_reviewer',
+    };
+    completedIds.forEach(sid => {
+      const content = stageResults[String(sid)] || '';
+      if (content) {
+        const skill = stageSkillMap[sid] || `stage${sid}`;
+        addWorkspaceFile({
+          file_name: `stage${sid}_${skill}.md`,
+          size: content.length,
+          content,
+          type: 'create',
+        });
+      }
+    });
+    if (status.critic_result) {
+      addWorkspaceFile({
+        file_name: `stage${currentStage}_gate_review.md`,
+        size: status.critic_result.length,
+        content: status.critic_result,
+        type: 'create',
+      });
+    }
+  }
+
+  const hero = document.getElementById('heroSection');
+  if (hero) hero.style.display = 'none';
+
+  // Cache so subsequent switches don't refetch.
+  const proj = _getProject(pid);
+  proj.stagesHtml = document.getElementById('meetingsArea').innerHTML;
+  completedIds.forEach(sid => {
+    const dot = document.getElementById('sd-' + sid);
+    if (dot) proj.stageStates[sid] = dot.className.replace('stage-dot ', '').trim() || 'pending';
+  });
+}
+
 function switchProject(pid) {
   if (_activeProjectId === pid) return;
 
@@ -655,6 +785,10 @@ function switchProject(pid) {
 
   // Replay any buffered events that arrived while this project was in the background
   if (typeof replayBufferedEvents === 'function') replayBufferedEvents(pid);
+
+  // If there's no cached HTML (page was reloaded, or project was created via API),
+  // pull historical stage_results from the backend and rebuild cards in place.
+  if (!proj.stagesHtml) hydrateProjectFromBackend(pid);
 }
 
 function renderProjectList(projects) {
@@ -1223,7 +1357,19 @@ function updateProducer(cardId, content) {
   const lcgHtml = (typeof window._tryRenderLcg === 'function')
     ? window._tryRenderLcg(cleaned)
     : null;
-  el.innerHTML = lcgHtml || _renderMd(cleaned);
+  // Companion conflict graph — only when lcg cards rendered. Fetches a
+  // topic-filtered subgraph from the aigraph backend and renders it as
+  // a D3 force layout above the cards. Async; the slot is mounted now
+  // and filled in once the API responds.
+  let finalHtml = lcgHtml || _renderMd(cleaned);
+  if (lcgHtml) {
+    finalHtml = `<details class="lcg-graph-container" open><summary class="lcg-graph-summary">Topic-filtered conflict graph · drag nodes, click hypothesis to jump</summary><div class="lcg-graph-body" id="sc-prod-graph-${cardId}"></div></details>` + finalHtml;
+  }
+  el.innerHTML = finalHtml;
+  if (lcgHtml && typeof window._renderLcgGraph === 'function') {
+    const graphSlot = document.getElementById('sc-prod-graph-' + cardId);
+    if (graphSlot) window._renderLcgGraph(graphSlot, cleaned);
+  }
   _scroll();
 }
 

@@ -18,7 +18,9 @@
 //
 // Functions are pure where possible; DOM mutation is isolated to setupLcgHover().
 
-const _ID_RE = /\b([ha]\d{3,4})\b/g;
+// Inline ref ids: creator `a461#cr2` (try first so it isn't truncated to a461)
+// or critic/anomaly `h225` / `a461`.
+const _ID_RE = /\b(?:a\d{2,4}#cr\d+|[ha]\d{3,4})\b/g;
 
 function _esc(s) {
   return String(s == null ? '' : s)
@@ -51,12 +53,30 @@ function _parseAnomaly(id, type, body) {
 }
 
 function _parseHypothesis(id, title, body) {
+  // The corpus' generator-template and the idea-construction LLM use
+  // different field names. Pull whichever set is present.
+  //   v1 (corpus): Mechanism / Predictions / Minimal test / Scope / Evidence gap
+  //   v2 (advisor): Claim / Construction / Why it matters / Falsifiable prediction / Minimal experiment
+  const stop = `(?=\\n\\*\\*|\\n###|\\n##|$)`;
+  const extract = (re) => _extract(body, new RegExp(re));
+  const claim = extract(`\\*\\*Claim\\.?\\*\\*\\s*([\\s\\S]*?)${stop}`);
+  const construction = extract(`\\*\\*Construction\\.?\\*\\*\\s*([\\s\\S]*?)${stop}`);
+  const whyMatters = extract(`\\*\\*Why it matters[^*\\n]*\\*\\*\\s*([\\s\\S]*?)${stop}`);
+  const falsifiable = extract(`\\*\\*Falsifiable [Pp]rediction\\.?\\*\\*\\s*([\\s\\S]*?)${stop}`);
+  const minExp = extract(`\\*\\*Minimal experiment\\.?\\*\\*\\s*([\\s\\S]*?)${stop}`);
   return {
     id,
     title,
-    mechanism: _extract(body, /\*\*Mechanism\.\*\*\s*([\s\S]*?)(?=\n\*\*|\n###|\n##|$)/),
-    predictions: _extractList(body, /\*\*Predictions:\*\*\s*\n([\s\S]*?)(?=\n\*\*|\n###|\n##|$)/),
-    minimalTest: _extract(body, /\*\*Minimal test\.\*\*\s*([\s\S]*?)(?=\n\*\*|\n###|\n##|$)/),
+    // v2 fields (advisor)
+    claim,
+    construction,
+    whyMatters,
+    falsifiable,
+    minimalExperiment: minExp,
+    // v1 fields (corpus) — kept for backward compatibility on legacy stage outputs
+    mechanism: extract(`\\*\\*Mechanism\\.?\\*\\*\\s*([\\s\\S]*?)${stop}`),
+    predictions: _extractList(body, new RegExp(`\\*\\*Predictions:\\*\\*\\s*\\n([\\s\\S]*?)${stop}`)),
+    minimalTest: extract(`\\*\\*Minimal test\\.?\\*\\*\\s*([\\s\\S]*?)${stop}`),
     scope: _extract(body, /\*\*Scope\.\*\*\s*([^\n]+)/),
     evidenceGap: _extract(body, /\*\*Evidence gap\.\*\*\s*([^\n]+)/),
     sourcePapers: Array.from(new Set(body.match(/arxiv:\d+\.\d+(?:v\d+)?/g) || [])),
@@ -98,7 +118,9 @@ export function parseLcgOutput(text) {
       anomalies.push(_parseAnomaly(anomMatch[1], anomMatch[2], sec.body));
       continue;
     }
-    const hypMatch = sec.heading.match(/^(h\d+)\s*[—\-–]\s*(.+)$/);
+    // h\d+ = critic (conflict-explanation) ids; a\d+#cr\d+ = creator (new-method
+    // proposal) ids — both render as hypothesis cards.
+    const hypMatch = sec.heading.match(/^(h\d+|a\d+#cr\d+)\s*[—\-–]\s*(.+)$/);
     if (hypMatch) {
       hypotheses.push(_parseHypothesis(hypMatch[1], hypMatch[2].trim(), sec.body));
     }
@@ -125,6 +147,13 @@ export function wrapInlineRefs(html, knownIds, ns) {
 
 function _renderHypCard(h, ns) {
   const rows = [];
+  // v2 fields (advisor idea-construction) come first when present.
+  if (h.claim) rows.push(['Claim', _esc(h.claim)]);
+  if (h.construction) rows.push(['Construction', _esc(h.construction)]);
+  if (h.whyMatters) rows.push(['Why it matters', _esc(h.whyMatters)]);
+  if (h.falsifiable) rows.push(['Falsifiable prediction', _esc(h.falsifiable)]);
+  if (h.minimalExperiment) rows.push(['Minimal experiment', _esc(h.minimalExperiment)]);
+  // v1 fields (legacy corpus template).
   if (h.mechanism) rows.push(['Mechanism', _esc(h.mechanism)]);
   if (h.predictions.length) {
     rows.push([
@@ -237,8 +266,11 @@ function _popupHtml(item) {
   if (item.kind === 'hyp') {
     const lines = [];
     lines.push(`<div class="lcg-pop-title"><span class="lcg-id">${_esc(item.id)}</span>${_esc(item.title)}</div>`);
-    if (item.mechanism) lines.push(`<div class="lcg-pop-row"><strong>Mechanism.</strong> ${_esc(item.mechanism)}</div>`);
-    if (item.minimalTest) lines.push(`<div class="lcg-pop-row"><strong>Minimal test.</strong> ${_esc(item.minimalTest)}</div>`);
+    // Prefer v2 (advisor idea-construction) fields, fall back to v1 (corpus).
+    if (item.claim) lines.push(`<div class="lcg-pop-row"><strong>Claim.</strong> ${_esc(item.claim)}</div>`);
+    else if (item.mechanism) lines.push(`<div class="lcg-pop-row"><strong>Mechanism.</strong> ${_esc(item.mechanism)}</div>`);
+    if (item.minimalExperiment) lines.push(`<div class="lcg-pop-row"><strong>Minimal experiment.</strong> ${_esc(item.minimalExperiment)}</div>`);
+    else if (item.minimalTest) lines.push(`<div class="lcg-pop-row"><strong>Minimal test.</strong> ${_esc(item.minimalTest)}</div>`);
     return lines.join('');
   }
   return `<div class="lcg-pop-title"><span class="lcg-id lcg-id-anom">${_esc(item.id)}</span>${_esc(item.type)}</div>` +
