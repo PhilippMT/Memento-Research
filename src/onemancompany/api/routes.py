@@ -510,6 +510,7 @@ async def get_state() -> dict:
 
 @router.post("/api/ceo/task")
 async def ceo_submit_task(
+    request: Request,
     task: str = Form(""),
     project_id: str = Form(""),
     project_name: str = Form(""),
@@ -518,6 +519,7 @@ async def ceo_submit_task(
     start_stage: int = Form(1),
     end_stage: int = Form(9),
     stage_assignments: str = Form(""),
+    auto_approve: bool = Form(False),
     files: list[UploadFile] = File(default=[]),
 ) -> dict:
     """CEO submits a task with optional files, routed to EA via persistent loop."""
@@ -549,6 +551,15 @@ async def ceo_submit_task(
         pid, iter_id = await async_create_project_from_task(task, "pending", product_id=product_id)
 
     pdir = get_project_dir(pid)
+
+    # Per-user LLM dispatch: attribute this project to the logged-in user (if any)
+    # so its agents run on the user's own LLM key. No-op when login is disabled.
+    try:
+        from onemancompany.api.auth_gate import current_user_id
+        from onemancompany.core.user_llm import set_project_owner
+        set_project_owner(pid, current_user_id(request))
+    except Exception as exc:
+        logger.debug("Could not record project owner for per-user LLM: {}", exc)
 
     # Save uploaded files to project attachments directory
     attachments: list[dict] = []
@@ -638,7 +649,7 @@ async def ceo_submit_task(
             except Exception as exc:
                 logger.warning("Ignoring invalid stage_assignments JSON: {}", exc)
 
-        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments)
+        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments, auto_approve=auto_approve)
 
     except Exception as e:
         logger.error("Failed to start pipeline: {}", e)
@@ -1024,7 +1035,9 @@ async def list_pipeline_branches(project_id: str):
 @router.get("/api/pipeline/{project_id}/status")
 async def pipeline_status(project_id: str):
     """Get current pipeline state for a project."""
-    from onemancompany.core.pipeline_engine import get_or_load_pipeline, STAGES
+    from onemancompany.core.pipeline_engine import (
+        get_or_load_pipeline, _load_state, STAGES,
+    )
     from onemancompany.core.project_archive import get_project_dir
 
     pdir = str(get_project_dir(project_id))
@@ -1032,6 +1045,21 @@ async def pipeline_status(project_id: str):
 
     if not engine:
         return {"error": "No pipeline found", "stages": STAGES}
+
+    # Refresh stage_results / critic_result / phase from disk. The engine's
+    # in-memory state lags whenever a subprocess producer (e.g. an openclaw
+    # talent) writes pipeline_state.yaml outside the engine's own write
+    # path. Without this re-read the UI shows phase=producer with empty
+    # stage_results long after the deliverable has been persisted. The
+    # `phase` / `current_stage` properties read off state, so updating
+    # state alone is enough.
+    if pdir:
+        disk = _load_state(pdir)
+        if disk:
+            for key in ("phase", "current_stage", "retries", "stage_results",
+                        "critic_result", "start_stage", "end_stage"):
+                if key in disk:
+                    engine.state[key] = disk[key]
 
     # Collect workspace files
     ws_files = []

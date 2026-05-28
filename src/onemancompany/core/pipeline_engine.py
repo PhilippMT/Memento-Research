@@ -19,6 +19,7 @@ from loguru import logger
 from onemancompany.core.events import event_bus, CompanyEvent, EventType
 from onemancompany.core.config import SYSTEM_AGENT
 from onemancompany.core.config import load_employee_configs
+from onemancompany.core.research_memory import ResearchMemoryStore
 
 # ---------------------------------------------------------------------------
 # Stage definitions
@@ -123,6 +124,7 @@ def get_or_load_pipeline(project_id: str, project_dir: str) -> "PipelineEngine |
         return None
     engine = PipelineEngine(project_id, project_dir, state.get("topic", ""))
     engine.state = state
+    engine._ensure_memory_state()
     _active_pipelines[project_id] = engine
     return engine
 
@@ -158,6 +160,9 @@ class PipelineEngine:
             "critic_result": None,
             "active_node_id": None,  # current task node being executed
             "active_employee_id": None,
+            "memory_retrievals": {},
+            "memory_episodes": {},
+            "memory_feedback": {},
         }
         _active_pipelines[project_id] = self
 
@@ -170,11 +175,20 @@ class PipelineEngine:
         return self.state.get("phase", "producer")
 
     def _save(self):
+        self._ensure_memory_state()
         _save_state(self.project_dir, self.state)
+
+    def _ensure_memory_state(self):
+        self.state.setdefault("memory_retrievals", {})
+        self.state.setdefault("memory_episodes", {})
+        self.state.setdefault("memory_feedback", {})
 
     def _stage_def(self, stage_id: int = None) -> dict:
         sid = stage_id or self.current_stage
         return STAGES[sid - 1] if 1 <= sid <= 9 else {}
+
+    def _memory_store(self) -> ResearchMemoryStore:
+        return ResearchMemoryStore(self.project_id, self.project_dir)
 
     # ------------------------------------------------------------------
     # Dispatch helpers
@@ -219,6 +233,19 @@ class PipelineEngine:
         self.state["active_employee_id"] = employee_id
         self._save()
 
+        # Start each pipeline stage with a FRESH Claude conversation. The
+        # daemon otherwise resumes one session per (employee, project) and
+        # accumulates history across every stage it touches — the critic
+        # reviews all 9 stages, so its resumed history blows past the model
+        # context window (observed: 623K tokens > 262K limit, Stage 6 critic
+        # failed → empty deliverable). Pipeline tasks pass full context in
+        # the prompt, so resumed history is pure overhead.
+        try:
+            from onemancompany.core.claude_session import reset_session
+            reset_session(employee_id, self.project_id)
+        except Exception as _e:  # best-effort; never block dispatch
+            logger.debug("[PIPELINE] reset_session skipped for {}: {}", employee_id, _e)
+
         employee_manager.schedule_node(employee_id, node.id, tree_path)
         employee_manager._schedule_next(employee_id)
 
@@ -238,6 +265,111 @@ class PipelineEngine:
             result = self.state["stage_results"][sid]
             parts.append(f"--- Stage {sid}: {stage_def.get('name', '')} ---\n{result}\n")
         return "\n".join(parts)
+
+    def _retrieve_memory_guidance(self, stage: dict, context: str, feedback: str = "") -> str:
+        """Retrieve MemRL-style prior lessons for the current stage."""
+        try:
+            retrieved = self._memory_store().retrieve_stage_guidance(
+                topic=self.topic,
+                stage=stage,
+                context=context,
+                feedback=feedback,
+            )
+        except Exception as exc:
+            logger.warning("[PIPELINE] Research memory retrieval failed: {}", exc)
+            return ""
+
+        self._ensure_memory_state()
+        self.state["memory_retrievals"][str(stage["id"])] = {
+            "ids": retrieved.memory_ids,
+            "query": retrieved.query,
+            "simmax": retrieved.simmax,
+        }
+        if retrieved.memory_ids:
+            logger.info(
+                "[PIPELINE] Retrieved {} research memories for stage {}",
+                len(retrieved.memory_ids), stage["id"],
+            )
+        return retrieved.guidance
+
+    def _record_stage_memory(
+        self,
+        stage: dict,
+        *,
+        producer_result: str,
+        critic_result: str,
+        passed: bool,
+        confidence: float | None,
+        outcome: str,
+    ) -> str | None:
+        self._ensure_memory_state()
+        stage_key = str(stage["id"])
+        retrieved_ids = self.state.get("memory_retrievals", {}).get(stage_key, {}).get("ids", [])
+        reward = self._critic_reward(
+            passed=passed,
+            confidence=confidence,
+            retries=self.state.get("retries", 0),
+            exhausted=outcome == "critic_reject_exhausted",
+        )
+        try:
+            memory_id = self._memory_store().record_stage_episode(
+                topic=self.topic,
+                stage=stage,
+                producer_result=producer_result,
+                critic_result=critic_result,
+                passed=passed,
+                confidence=confidence,
+                retries=self.state.get("retries", 0),
+                reward=reward,
+                retrieved_memory_ids=retrieved_ids,
+                outcome=outcome,
+            )
+        except Exception as exc:
+            logger.warning("[PIPELINE] Research memory write failed: {}", exc)
+            return None
+
+        self.state["memory_episodes"][stage_key] = memory_id
+        logger.info(
+            "[PIPELINE] Recorded research memory {} for stage {} (reward={:.2f})",
+            memory_id, stage["id"], reward,
+        )
+        return memory_id
+
+    def _apply_ceo_memory_feedback(self, stage: dict, feedback: str, approved: bool) -> None:
+        self._ensure_memory_state()
+        stage_key = str(stage["id"])
+        episode_id = self.state.get("memory_episodes", {}).get(stage_key)
+        retrieved_ids = self.state.get("memory_retrievals", {}).get(stage_key, {}).get("ids", [])
+        if not episode_id and not retrieved_ids:
+            return
+        try:
+            update = self._memory_store().apply_ceo_feedback(
+                episode_id=episode_id,
+                retrieved_memory_ids=retrieved_ids,
+                feedback=feedback,
+                approved=approved,
+            )
+        except Exception as exc:
+            logger.warning("[PIPELINE] Research memory CEO feedback update failed: {}", exc)
+            return
+        self.state["memory_feedback"][stage_key] = update
+        self._save()
+
+    @staticmethod
+    def _critic_reward(
+        *,
+        passed: bool,
+        confidence: float | None,
+        retries: int,
+        exhausted: bool = False,
+    ) -> float:
+        if exhausted:
+            return -1.0
+        if passed:
+            base = confidence if confidence is not None else 0.7
+            return max(-1.0, min(1.0, float(base) - (0.15 * int(retries))))
+        miss = 1.0 - float(confidence if confidence is not None else 0.0)
+        return max(-1.0, min(1.0, -max(0.35, miss)))
 
     # ------------------------------------------------------------------
     # Public API — called by routes.py and vessel.py
@@ -268,13 +400,19 @@ class PipelineEngine:
         )
         return f"iter_{digest}"
 
-    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None):
-        """Begin the pipeline from the given stage."""
+    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False):
+        """Begin the pipeline from the given stage.
+
+        ``auto_approve`` (headless/unattended mode): when True, every CEO gate
+        is advanced automatically — the pipeline runs end-to-end with no human
+        confirmation. Used for background full-auto runs.
+        """
         self.state["current_stage"] = max(1, min(start_stage, 9))
         self.state["start_stage"] = self.state["current_stage"]
         self.state["end_stage"] = max(self.state["current_stage"], min(end_stage, 9))
         self.state["prior_context"] = prior_context
         self.state["stage_assignments"] = stage_assignments or {}
+        self.state["auto_approve"] = bool(auto_approve)
         self.state["phase"] = "producer"
         self.state["retries"] = 0
         self._save()
@@ -330,10 +468,13 @@ class PipelineEngine:
             return
 
         context = self._build_context()
+        memory_guidance = self._retrieve_memory_guidance(stage, context, feedback)
         desc = (
             f"Stage {stage['id']}: {stage['name']}\n\n"
             f"{context}\n"
         )
+        if memory_guidance:
+            desc += f"\n--- Retrieved Research Memory ---\n{memory_guidance}\n"
         if feedback:
             desc += f"\nFeedback from previous review:\n{feedback}\n"
         user_feedback = self._consume_pending_feedback()
@@ -454,6 +595,14 @@ class PipelineEngine:
         critic_id = _find_employee_by_skill(CRITIC_SKILL)
         if not critic_id:
             logger.warning("[PIPELINE] No critic employee found, auto-passing stage {}", stage["id"])
+            self._record_stage_memory(
+                stage,
+                producer_result=producer_result,
+                critic_result="No adversarial critic was available; auto-pass.",
+                passed=True,
+                confidence=None,
+                outcome="auto_pass",
+            )
             self._on_critic_pass(producer_result)
             return
 
@@ -465,10 +614,33 @@ class PipelineEngine:
             f"3. Specific reasoning\n\n"
             f"If REJECT, explain exactly what needs to be improved.\n\n"
         )
+        # Stage 3 (Idea Generation) is produced by the literature-conflict-graph
+        # (aigraph) tool, so its deliverable is a `# Selected Hypotheses` report —
+        # NOT the generic idea-generation document. Grade it on that basis.
+        if stage["id"] == 3:
+            desc += (
+                "## STAGE 3 IS A LITERATURE-CONFLICT-GRAPH DELIVERABLE\n"
+                "The Stage 3 deliverable is generated by the aigraph "
+                "literature-conflict-graph tool. Its expected shape is a "
+                "`# Stage 3: Idea Generation — <topic>` heading followed by a "
+                "`# Selected Hypotheses` report with `### Anomaly a… —` and "
+                "hypothesis items grounded in real claim citations. Hypothesis "
+                "items appear as `### h… —` (critic / conflict-explanation ideas) "
+                "or `### a…#cr… —` (creator / new-method-proposal ideas); BOTH "
+                "are valid. This format is correct and intentional — it is NOT "
+                "hand-written prose.\n"
+                "PASS when: a topic heading is present, there is a "
+                "`# Selected Hypotheses` section, and it contains at least one "
+                "hypothesis (`### h…` or `### a…#cr…`) citing claim IDs. Do NOT require the "
+                "generic idea-generation sections (evaluation architecture, "
+                "method pseudocode, risk tables, outcome scenarios) — those "
+                "belong to Stages 4–5, not here. Only REJECT if the report is "
+                "empty, has zero hypotheses, or says `_No matches for topic_`.\n\n"
+            )
         # Stage 4 (Methodology Design) is graded against a CCF-A quality
         # checklist. Load the runbook first so the critic applies the same
         # bar an ICML/NeurIPS reviewer would.
-        if stage["id"] == 4:
+        elif stage["id"] == 4:
             desc += (
                 "## REQUIRED FIRST STEP\n"
                 'Before reading the producer output, call '
@@ -538,6 +710,21 @@ class PipelineEngine:
         if self.phase == "producer":
             # Producer finished → store result, dispatch critic
             stage = self._stage_def()
+            # Stage 3 (literature-conflict-graph) deliverable is the FILE the
+            # aigraph tool writes (`# Selected Hypotheses` report). The agent's
+            # chat result is often just a summary, which the UI can't render as
+            # a conflict graph — so prefer the file content as the stage result
+            # (the critic reads the file too, keeping them consistent).
+            if stage["id"] == 3:
+                from pathlib import Path
+                deliverable = Path(self.project_dir) / f"stage3_{stage['skill']}.md"
+                try:
+                    if deliverable.exists():
+                        file_text = deliverable.read_text(encoding="utf-8").strip()
+                        if "# Selected Hypotheses" in file_text:
+                            result = file_text
+                except Exception as e:
+                    logger.debug("[PIPELINE] Stage 3 file-content fallback failed: {}", e)
             self.state["stage_results"][str(stage["id"])] = result
             self._save()
             logger.info("[PIPELINE] Stage {} producer complete, dispatching critic", stage["id"])
@@ -557,17 +744,42 @@ class PipelineEngine:
             self._emit_critic_result(stage["id"], result, is_pass, confidence)
 
             if is_pass:
+                self._record_stage_memory(
+                    stage,
+                    producer_result=self.state["stage_results"].get(str(stage["id"]), ""),
+                    critic_result=result,
+                    passed=True,
+                    confidence=confidence,
+                    outcome="critic_pass",
+                )
+                self._save()
                 logger.info("[PIPELINE] Stage {} PASSED (confidence={})", stage["id"], confidence)
                 self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
             else:
                 retries = self.state.get("retries", 0)
                 if retries < MAX_RETRIES:
+                    self._record_stage_memory(
+                        stage,
+                        producer_result=self.state["stage_results"].get(str(stage["id"]), ""),
+                        critic_result=result,
+                        passed=False,
+                        confidence=confidence,
+                        outcome="critic_reject_retry",
+                    )
                     self.state["retries"] = retries + 1
                     self._save()
                     logger.info("[PIPELINE] Stage {} REJECTED (retry {}/{})", stage["id"], retries + 1, MAX_RETRIES)
                     self._emit_stage_event("stage_failed", stage["id"], confidence=confidence)
                     self._dispatch_producer(feedback=result)
                 else:
+                    self._record_stage_memory(
+                        stage,
+                        producer_result=self.state["stage_results"].get(str(stage["id"]), ""),
+                        critic_result=result,
+                        passed=False,
+                        confidence=confidence,
+                        outcome="critic_reject_exhausted",
+                    )
                     logger.warning("[PIPELINE] Stage {} exhausted retries, holding for CEO", stage["id"])
                     self.state["phase"] = "gate"
                     self._save()
@@ -862,9 +1074,12 @@ class PipelineEngine:
         if feedback and any(kw in feedback.upper() for kw in self._REVISION_KEYWORDS):
             # CEO wants revision
             logger.info("[PIPELINE] CEO requested revision for stage {}", stage["id"])
+            self._apply_ceo_memory_feedback(stage, feedback, approved=False)
             self.state["retries"] = 0
             self._dispatch_producer(feedback=feedback)
             return
+
+        self._apply_ceo_memory_feedback(stage, feedback, approved=True)
 
         # Advance to next stage
         end = self.state.get("end_stage", 9)
@@ -974,8 +1189,26 @@ class PipelineEngine:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
+            # Headless/unattended mode: advance the gate automatically so the
+            # pipeline runs end-to-end with no human confirmation. Covers BOTH
+            # gate openings (clean PASS and retries-exhausted) since both land
+            # here. A human would otherwise click "approve" in the UI.
+            if self.state.get("auto_approve"):
+                loop.create_task(self._auto_approve_gate(stage_id, exhausted))
         except RuntimeError as exc:
             logger.debug("Skipping gate event; no running event loop: {}", exc)
+
+    async def _auto_approve_gate(self, stage_id: int, exhausted: bool):
+        """Unattended-mode gate advance: behaves like a CEO clicking approve."""
+        import asyncio
+        await asyncio.sleep(0)  # let the gate event flush first
+        if self.phase != "gate":
+            return
+        logger.info(
+            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {} "
+            "(exhausted={})", stage_id, exhausted,
+        )
+        self.on_ceo_approve("")
 
     def _emit_pipeline_complete(self):
         import asyncio

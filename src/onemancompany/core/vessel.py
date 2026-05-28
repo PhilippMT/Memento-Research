@@ -1462,6 +1462,10 @@ class EmployeeManager:
 
         project_id = node.project_id
         project_dir = node.project_dir
+        # Per-user LLM dispatch: run this task on the project owner's LLM key
+        # (None → global key, i.e. unchanged behaviour).
+        from onemancompany.core.user_llm import current_user_llm, resolve_for_project
+        user_llm_token = current_user_llm.set(resolve_for_project(project_id))
         agent_error = False
         try:
             # 4. Build task context with injections
@@ -1729,6 +1733,7 @@ class EmployeeManager:
         finally:
             _current_vessel.reset(loop_token)
             _current_task_id.reset(task_token)
+            current_user_llm.reset(user_llm_token)
 
         # 7b. Collect verification evidence from execution log → store as file
         if project_dir and not agent_error:

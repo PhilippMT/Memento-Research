@@ -257,6 +257,14 @@ def make_llm(employee_id: str = "", temperature: float | None = None) -> BaseCha
     # --- OpenAI-compatible providers (openrouter, openai, kimi, deepseek, etc.) ---
     if prov and effective_chat_class == CHAT_CLASS_OPENAI:
         effective_key = _resolve_provider_key(api_provider, api_key)
+        # Per-user LLM dispatch: if the current agent task runs for a logged-in
+        # user with their own key, use it instead of the shared global key.
+        from onemancompany.core.user_llm import current_user_llm
+        _user_llm = current_user_llm.get()
+        if _user_llm and _user_llm.get("api_key"):
+            effective_key = _user_llm["api_key"]
+            if _user_llm.get("model"):
+                model = _user_llm["model"]
         if effective_key:
             base_url = prov.base_url
             # Allow custom base_url override: provider-specific or global
@@ -264,6 +272,8 @@ def make_llm(employee_id: str = "", temperature: float | None = None) -> BaseCha
                 base_url = settings.openrouter_base_url
             elif api_provider == "custom" or (settings.default_api_base_url and api_provider == settings.default_api_provider):
                 base_url = settings.default_api_base_url
+            if _user_llm and _user_llm.get("base_url"):
+                base_url = _user_llm["base_url"]
             return ChatOpenAI(
                 model=model,
                 api_key=effective_key,

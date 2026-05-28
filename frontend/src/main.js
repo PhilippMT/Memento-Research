@@ -5,10 +5,12 @@ import { OmcClient } from './omc-client.js';
 import { EventAdapter } from './event-adapter.js';
 import { PipelineController } from './pipeline-controller.js';
 import { tryRenderLcg, setupLcgHover } from './lcg-renderer.js';
+import { renderLcgGraph } from './lcg-graph.js';
 
 const OMC_URL = window.location.origin;
 
 window._tryRenderLcg = tryRenderLcg;
+window._renderLcgGraph = renderLcgGraph;
 setupLcgHover();
 
 let client;
@@ -21,6 +23,15 @@ function _setStatus(text) {
   const el = document.getElementById('pipelineStatus');
   if (el) el.textContent = text;
 }
+
+// Reveal the logout button only when the optional login gate is enabled
+// (/auth/status exists only then; otherwise this 404s and the button stays hidden).
+fetch('/auth/status').then(r => r.ok ? r.json() : null).then(s => {
+  if (s && s.enabled) {
+    const b = document.getElementById('logoutBtn');
+    if (b) b.style.display = '';
+  }
+}).catch(() => {});
 
 async function init() {
   client = new OmcClient(OMC_URL);

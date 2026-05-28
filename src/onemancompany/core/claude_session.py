@@ -152,6 +152,48 @@ def _clear_running_pid(employee_id: str, project_id: str) -> None:
         _save_sessions(employee_id, sessions)
 
 
+def reset_session(employee_id: str, project_id: str) -> None:
+    """Drop the cached session + live daemon for (employee, project) so the
+    NEXT task starts a fresh Claude conversation with no resumed history.
+
+    The persistent-daemon design reuses one CLI process per (employee,
+    project) and resumes its session via ``--resume``, so conversation
+    history accumulates across tasks. For an employee that runs many tasks
+    in one project (notably the pipeline critic, which reviews every stage),
+    that history grows without bound and eventually exceeds the model's
+    context window. Pipeline-managed tasks pass their full context
+    explicitly in the prompt, so they never need resumed history — calling
+    this before dispatch keeps each stage's conversation bounded.
+
+    Sync + best-effort: removes the daemon from the registry (a later
+    get_daemon will spawn a fresh process), terminates the old daemon's
+    subprocess so it doesn't leak (each pipeline stage calls this, so leaving
+    the persistent ``claude`` process running would accumulate one orphan per
+    stage), and clears the stored session_id.
+    """
+    key = f"{employee_id}:{project_id}"
+    daemon = _daemons.pop(key, None)
+    if daemon is not None:
+        # Kill the old persistent process. Sync SIGTERM (asyncio's child watcher
+        # reaps it); we intentionally do NOT touch the running-pid / session-lock
+        # files here, because a fresh daemon for the same key is spawned right
+        # after this call and owns them — clearing them async would race it.
+        task = getattr(daemon, "_stderr_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        proc = getattr(daemon, "proc", None)
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                logger.debug("[claude-session] reset_session: proc already exited for {}:{}", employee_id, project_id)
+        daemon.proc = None
+    sessions = _load_sessions(employee_id)
+    if project_id in sessions:
+        del sessions[project_id]
+        _save_sessions(employee_id, sessions)
+
+
 # ---------------------------------------------------------------------------
 # ClaudeDaemon — persistent Claude CLI process per employee
 # ---------------------------------------------------------------------------

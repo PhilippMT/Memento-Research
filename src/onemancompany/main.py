@@ -706,6 +706,12 @@ app.add_middleware(NoCacheStaticMiddleware)
 app.include_router(router)
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
+# Optional login gate (no-op unless AUTH_ENABLED=1) — must run after the routes
+# and mount above so it can prepend its own routes ahead of the static catch-all.
+from onemancompany.api.auth_gate import install_auth_gate  # noqa: E402
+
+install_auth_gate(app)
+
 
 def run() -> None:
     from onemancompany.core.config import settings
