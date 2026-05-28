@@ -163,7 +163,6 @@ def test_dispatch_producer_without_pending_feedback_unchanged(tmp_path, monkeypa
     assert "Direct guidance from CEO" not in desc
     assert "pending_user_feedback" not in engine.state or engine.state.get("pending_user_feedback", "") == ""
 
-
 def test_dispatch_producer_injects_research_memory_guidance(tmp_path, monkeypatch):
     dispatched = []
 
@@ -369,7 +368,6 @@ def test_ceo_approval_revision_advance_and_complete(tmp_path, monkeypatch):
     engine.on_ceo_approve()
     assert engine.phase == "done"
     assert completed == ["p1"]
-
 
 def test_ceo_revision_updates_research_memory_feedback(tmp_path, monkeypatch):
     producer_feedback = []
