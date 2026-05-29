@@ -68,6 +68,35 @@ def get_project_owner(project_id: str) -> str:
     return _read_json(_OWNERS_FILE).get(_base_pid(project_id), "")
 
 
+def user_can_access_project(project_id: str, user_id: str) -> bool:
+    """Per-user project isolation.
+
+    A logged-in user may access only the projects they own. When ``user_id``
+    is empty — auth disabled, localhost automation, or no cookie — all access
+    is allowed, identical to the pre-isolation behaviour (zero regression for
+    single-user deployments).
+    """
+    if not user_id:
+        return True
+    return get_project_owner(project_id) == str(user_id)
+
+
+def filter_projects_for_user(projects: list[dict], user_id: str) -> list[dict]:
+    """Return only the projects a logged-in user owns.
+
+    Empty ``user_id`` → return all (auth off / single-user). Project dicts use
+    ``project_id`` (falling back to ``id``); ownership is keyed by base pid.
+    """
+    if not user_id:
+        return projects
+    owners = _read_json(_OWNERS_FILE)
+    uid = str(user_id)
+    return [
+        p for p in projects
+        if owners.get(_base_pid(p.get("project_id") or p.get("id") or ""), "") == uid
+    ]
+
+
 def resolve_user_llm(user_id: str) -> dict | None:
     """Return ``{api_key, base_url?, model?}`` for this user, or None for global."""
     if not user_id:

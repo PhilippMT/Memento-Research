@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -137,6 +138,26 @@ async def _do_logout(request):
     return resp
 
 
+# Per-project API path shapes. The captured segment is the (base) project id;
+# ownership is enforced so a logged-in user cannot read/mutate another user's
+# project by guessing its id. `/api/projects` (list) and `/api/projects/named`
+# (no id) intentionally don't match — the list endpoints filter by owner instead.
+_PROJ_NAMED_RE = re.compile(r"^/api/projects/named/([^/]+)")
+_PROJ_SUB_RE = re.compile(r"^/api/projects/([^/]+)/")
+_PIPELINE_TASK_RE = re.compile(r"^/api/(?:pipeline|task)/([^/]+)")
+
+
+def _project_id_from_path(path: str) -> str:
+    """Extract the project id a request targets, or "" if it isn't a
+    per-project route (those are guarded; everything else passes through)."""
+    for rx in (_PROJ_NAMED_RE, _PROJ_SUB_RE, _PIPELINE_TASK_RE):
+        m = rx.match(path)
+        if m:
+            seg = m.group(1)
+            return "" if seg == "named" else seg
+    return ""
+
+
 class _AuthGateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
@@ -152,6 +173,15 @@ class _AuthGateMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
         token = request.cookies.get(COOKIE, "")
         if token and _token_valid(token):
+            # Per-user isolation: block access to a project this user doesn't own.
+            pid = _project_id_from_path(path)
+            if pid:
+                from onemancompany.core.user_llm import user_can_access_project
+                if not user_can_access_project(pid, current_user_id(request)):
+                    return JSONResponse(
+                        {"detail": "forbidden: project belongs to another user"},
+                        status_code=403,
+                    )
             return await call_next(request)
         if "text/html" in request.headers.get("accept", ""):
             return RedirectResponse("/login", status_code=302)

@@ -384,7 +384,7 @@ async def admin_clear_tasks() -> dict:
 
 
 @router.get("/api/bootstrap")
-async def get_bootstrap() -> dict:
+async def get_bootstrap(request: Request) -> dict:
     """Single bootstrap endpoint — replaces 6 parallel fetches with 1 call.
 
     Returns employees, task-queue (lightweight), rooms, tools, activity-log,
@@ -433,9 +433,13 @@ async def get_bootstrap() -> dict:
         data["needs_setup"] = runtime.get("needs_setup", False)
         employees.append(data)
 
-    # Lightweight task queue — skip expensive _tree_summary on bootstrap
+    # Lightweight task queue — skip expensive _tree_summary on bootstrap.
+    # Per-user isolation: only surface the logged-in user's own projects.
+    from onemancompany.api.auth_gate import current_user_id
+    from onemancompany.core.user_llm import filter_projects_for_user
     loop = asyncio.get_event_loop()
     all_projects = await loop.run_in_executor(None, list_projects)
+    all_projects = filter_projects_for_user(all_projects, current_user_id(request))
     tasks = []
     for p in all_projects:
         if p.get("is_named"):
@@ -3145,30 +3149,58 @@ async def get_dashboard_costs() -> dict:
 
 
 @router.get("/api/projects")
-async def get_projects(limit: int = 100, offset: int = 0) -> dict:
-    """List all projects (v1 + v2 summary view for the project wall)."""
+async def get_projects(request: Request, limit: int = 100, offset: int = 0) -> dict:
+    """List the current user's projects (v1 + v2 summary view for the project wall).
+
+    Per-user isolation: a logged-in user sees only the projects they own. With
+    auth off (empty user id) all projects are returned (single-user behaviour).
+    """
     from onemancompany.core.project_archive import list_projects
-    all_projects = list_projects()
+    from onemancompany.api.auth_gate import current_user_id
+    from onemancompany.core.user_llm import filter_projects_for_user
+    all_projects = filter_projects_for_user(list_projects(), current_user_id(request))
     return {"projects": all_projects[offset:offset + limit], "total": len(all_projects)}
 
 
 @router.post("/api/projects")
-async def create_project_endpoint(body: dict) -> dict:
-    """Create a new named project."""
+async def create_project_endpoint(request: Request, body: dict) -> dict:
+    """Create a new named project, owned by the logged-in user."""
     from onemancompany.core.project_archive import create_named_project
 
     name = body.get("name", "").strip()
     if not name:
         return {"error": "Missing project name"}
     project_id = create_named_project(name)
+    # Per-user isolation: attribute the project to its creator so it shows up
+    # in (and only in) their workspace. No-op when login is disabled.
+    try:
+        from onemancompany.api.auth_gate import current_user_id
+        from onemancompany.core.user_llm import set_project_owner
+        set_project_owner(project_id, current_user_id(request))
+    except Exception as e:
+        logger.debug("[projects] could not set owner: {}", e)
     return {"project_id": project_id, "name": name}
 
 
+@router.get("/api/me")
+async def get_current_user(request: Request) -> dict:
+    """Identify the logged-in user (for the frontend to show who's signed in).
+
+    Returns ``{"user_id": "", "authenticated": false}`` when auth is off or no
+    valid cookie is present.
+    """
+    from onemancompany.api.auth_gate import current_user_id
+    uid = current_user_id(request)
+    return {"user_id": uid, "authenticated": bool(uid)}
+
+
 @router.get("/api/projects/named")
-async def list_named_projects_endpoint() -> dict:
-    """List all projects (v1 + v2)."""
+async def list_named_projects_endpoint(request: Request) -> dict:
+    """List the current user's projects (v1 + v2)."""
     from onemancompany.core.project_archive import list_projects
-    return {"projects": list_projects()}
+    from onemancompany.api.auth_gate import current_user_id
+    from onemancompany.core.user_llm import filter_projects_for_user
+    return {"projects": filter_projects_for_user(list_projects(), current_user_id(request))}
 
 
 @router.get("/api/projects/named/{project_id}")
