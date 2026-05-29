@@ -400,12 +400,17 @@ class PipelineEngine:
         )
         return f"iter_{digest}"
 
-    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False):
+    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False, paper_config: dict = None):
         """Begin the pipeline from the given stage.
 
         ``auto_approve`` (headless/unattended mode): when True, every CEO gate
         is advanced automatically — the pipeline runs end-to-end with no human
         confirmation. Used for background full-auto runs.
+
+        ``paper_config`` (Stage 8 only): {"output_format": "markdown"|"latex"|"docx"|"both",
+        "venue": "iclr2026"|"neurips2026"}. Read only when dispatching Stage 8 —
+        earlier stages never see it. Persisted into pipeline_state.yaml so a
+        revert to Stage 8 reuses the same target format.
         """
         self.state["current_stage"] = max(1, min(start_stage, 9))
         self.state["start_stage"] = self.state["current_stage"]
@@ -413,6 +418,7 @@ class PipelineEngine:
         self.state["prior_context"] = prior_context
         self.state["stage_assignments"] = stage_assignments or {}
         self.state["auto_approve"] = bool(auto_approve)
+        self.state["paper_config"] = paper_config or {}
         self.state["phase"] = "producer"
         self.state["retries"] = 0
         self._save()
@@ -571,6 +577,21 @@ class PipelineEngine:
                 "Methodology, Experimental Setup, Results, Discussion, Limitations, "
                 "Conclusion, Reproducibility, References). Preserve all LaTeX "
                 "notation ($...$, $$...$$) from Stage 4 verbatim.\n"
+            )
+            _paper_cfg = self.state.get("paper_config") or {}
+            _fmt = (_paper_cfg.get("output_format") or "markdown").strip().lower()
+            _venue = (_paper_cfg.get("venue") or "").strip().lower()
+            desc += (
+                "\n## OUTPUT FORMAT DIRECTIVE\n"
+                f"output_format={_fmt}"
+            )
+            if _fmt in ("latex", "both"):
+                desc += f" venue={_venue or 'iclr2026'}"
+            desc += (
+                "\n(Parse this directive per skills/paper_writer/SKILL.md Step 4. "
+                "For latex/both, call fetch_latex_template(venue=..., dest_dir=<workspace>/stage8_paper) "
+                "and overwrite main.tex with your synthesised content. "
+                "For docx, call render_docx. For markdown, write stage8_paper_writer.md as usual.)\n"
             )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "

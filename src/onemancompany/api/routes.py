@@ -520,6 +520,8 @@ async def ceo_submit_task(
     end_stage: int = Form(9),
     stage_assignments: str = Form(""),
     auto_approve: bool = Form(False),
+    paper_format: str = Form("markdown"),
+    paper_venue: str = Form(""),
     files: list[UploadFile] = File(default=[]),
 ) -> dict:
     """CEO submits a task with optional files, routed to EA via persistent loop."""
@@ -649,7 +651,12 @@ async def ceo_submit_task(
             except Exception as exc:
                 logger.warning("Ignoring invalid stage_assignments JSON: {}", exc)
 
-        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments, auto_approve=auto_approve)
+        # Stage 8 only — controls how Paper Writer renders the final paper.
+        # Earlier stages ignore this entirely.
+        _paper_cfg = {"output_format": (paper_format or "markdown").strip().lower()}
+        if paper_venue:
+            _paper_cfg["venue"] = paper_venue.strip().lower()
+        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments, auto_approve=auto_approve, paper_config=_paper_cfg)
 
     except Exception as e:
         logger.error("Failed to start pipeline: {}", e)
