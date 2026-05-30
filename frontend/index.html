@@ -33,6 +33,34 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 
 /* ══ SIDEBAR ══ */
 .sidebar{width:272px;min-width:272px;background:var(--white);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.sidebar-section{margin-top:auto;padding:12px 16px;border-top:1px solid var(--border)}
+.sidebar-mod-btn{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text2);padding:8px 12px;border-radius:8px;font-size:.78rem;font-weight:600;cursor:pointer;text-align:left;transition:all .12s}
+.sidebar-mod-btn:hover{background:var(--green-subtle);color:var(--green);border-color:var(--green)}
+
+/* Agent LLM management modal */
+.llm-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:500;display:flex;align-items:center;justify-content:center}
+.llm-modal{background:var(--white);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);width:560px;max-width:92vw;max-height:84vh;display:flex;flex-direction:column}
+.llm-modal-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.llm-modal-title{font-size:.95rem;font-weight:700;color:var(--text1)}
+.llm-modal-close{background:none;border:none;font-size:1.1rem;color:var(--text3);cursor:pointer;padding:2px 8px}
+.llm-modal-close:hover{color:var(--text1)}
+.llm-modal-body{padding:8px 18px 16px;overflow-y:auto}
+.llm-row{padding:10px 0;border-bottom:1px solid var(--border)}
+.llm-row:last-child{border-bottom:none}
+.llm-row-head{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+.llm-row-name{font-weight:600;font-size:.82rem;color:var(--text1)}
+.llm-row-id{font-size:.62rem;color:var(--text4);font-family:var(--mono)}
+.llm-row-default{font-size:.62rem;color:var(--text4);margin-bottom:6px;font-family:var(--mono)}
+.llm-field{display:flex;align-items:center;gap:8px;margin:3px 0}
+.llm-field-label{font-size:.66rem;color:var(--text3);min-width:64px}
+.llm-field-input{flex:1;padding:4px 8px;font-size:.72rem;border:1px solid var(--border);border-radius:5px;background:var(--white);color:var(--text1)}
+.llm-row-actions{display:flex;justify-content:flex-end;margin-top:6px}
+.llm-save-btn{padding:5px 14px;font-size:.72rem;border:1px solid var(--green);background:var(--green);color:#fff;border-radius:5px;cursor:pointer;font-weight:600}
+.llm-save-btn:disabled{opacity:.55;cursor:not-allowed}
+.llm-save-btn:hover:not(:disabled){background:var(--green-deep,#1a7a3a)}
+.llm-row-status{font-size:.62rem;color:var(--text4);margin-left:8px}
+.llm-row-status.ok{color:var(--green)}
+.llm-row-status.err{color:var(--red,#c1432a)}
 .sidebar-head{padding:20px 20px 0;margin-bottom:20px}
 .brand{display:flex;align-items:center;gap:10px;margin-bottom:16px}
 .brand-icon{width:34px;height:34px;background:var(--green);border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(36,90,64,.2)}
@@ -496,6 +524,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
     </div>
     <button class="btn-new-project" id="btnNewProject" onclick="document.getElementById('heroSection').style.display='';document.getElementById('pipelineBar').style.display='none';document.getElementById('meetingsArea').innerHTML=''">+ New Research</button>
     <div id="projectList"><div class="proj-empty">No projects yet</div></div>
+    <!-- Bottom section: cross-cutting management modules. Kept visually
+         distinct from the project list so it doesn't blend into "projects" -->
+    <div class="sidebar-section">
+      <button class="sidebar-mod-btn" id="btnLlmSettings" onclick="window._openLlmSettings && window._openLlmSettings()">🧠 Agent LLM</button>
+    </div>
   </aside>
 
   <!-- ══ MAIN ══ -->
@@ -2117,6 +2150,263 @@ function closeBreakpointDialog() {
 window.openBreakpointDialog = openBreakpointDialog;
 window.addBreakpointMessage = addBreakpointMessage;
 window.closeBreakpointDialog = closeBreakpointDialog;
+
+// ═══════════════════════════════════════════════════════════════════
+// Agent LLM Settings — sidebar management module
+// ═══════════════════════════════════════════════════════════════════
+// Per-agent management of llm_model + api_provider + api_key +
+// temperature. Lives in a modal opened from the sidebar so it's not
+// buried inside the employee detail panel. Lists every employee that
+// was hired from hire_list.json (i.e. has a talent_id) and shows the
+// canonical default for each so the user knows the baseline they're
+// editing against.
+
+async function _openLlmSettings() {
+  // Tear down any prior instance so reopening doesn't pile up modals.
+  document.getElementById('llmSettingsBackdrop')?.remove();
+
+  let employees = [];
+  let providerGroups = [];
+  try {
+    const [boot, providers] = await Promise.all([
+      fetch('/api/bootstrap').then(r => r.json()),
+      fetch('/api/auth/providers').then(r => r.json()),
+    ]);
+    employees = (boot.employees || []).filter(e => (e.talent_id || '') !== '');
+    providerGroups = providers || [];
+  } catch (e) {
+    alert('Failed to load agent list: ' + e.message);
+    return;
+  }
+
+  // Cache (provider, employee_id) → models list. Per-employee api_key
+  // overrides mean the same provider can return different lists for
+  // different agents, so the cache key must include the employee.
+  const modelsByKey = new Map();
+  function _modelsFor(provider, employeeId) {
+    const cacheKey = `${provider}|${employeeId || ''}`;
+    if (!modelsByKey.has(cacheKey)) {
+      const url = `/api/models?provider=${encodeURIComponent(provider)}`
+        + (employeeId ? `&employee_id=${encodeURIComponent(employeeId)}` : '');
+      modelsByKey.set(
+        cacheKey,
+        fetch(url)
+          .then(r => r.json())
+          .then(d => d || {models: []})
+          .catch(err => ({models: [], error: err.message})),
+      );
+    }
+    return modelsByKey.get(cacheKey);
+  }
+
+  async function _populateModelSelect(select, provider, employeeId, currentModel) {
+    select.innerHTML = '<option value="">Loading…</option>';
+    select.disabled = true;
+    const resp = await _modelsFor(provider, employeeId);
+    select.disabled = false;
+    const models = (resp && resp.models) || [];
+    // No key configured for this provider — tell the user inline so they
+    // don't think the dropdown is broken. Setting an API Key + Save will
+    // make subsequent opens of this dialog populate it.
+    if (models.length === 0 && resp && resp.error) {
+      select.innerHTML = `<option value="">⚠ ${_escHtml(resp.error)} — set API Key below</option>`;
+      return;
+    }
+    // Always preserve the current employee value as the first selectable
+    // option even if it isn't in the provider's catalog (e.g. a custom
+    // model id) — otherwise switching provider would silently blank the
+    // model and the user might Save without noticing.
+    const opts = [`<option value="">-- Use default model --</option>`];
+    if (currentModel) {
+      opts.push(`<option value="${_escHtml(currentModel)}" selected>${_escHtml(currentModel)}</option>`);
+    }
+    for (const m of models) {
+      if (m.id === currentModel) continue;
+      opts.push(`<option value="${_escHtml(m.id)}">${_escHtml(m.name || m.id)}</option>`);
+    }
+    select.innerHTML = opts.join('');
+  }
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'llmSettingsBackdrop';
+  backdrop.className = 'llm-modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="llm-modal">
+      <div class="llm-modal-head">
+        <div class="llm-modal-title">🧠 Agent LLM Settings</div>
+        <button class="llm-modal-close" id="llmModalClose">✕</button>
+      </div>
+      <div class="llm-modal-body" id="llmModalBody"></div>
+    </div>
+  `;
+  // Close on backdrop click but NOT on inner-modal click (so editing
+  // inside doesn't dismiss the dialog).
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  });
+  document.body.appendChild(backdrop);
+  document.getElementById('llmModalClose').onclick = () => backdrop.remove();
+
+  const body = document.getElementById('llmModalBody');
+  if (!employees.length) {
+    body.innerHTML = '<div style="color:var(--text3);padding:20px;text-align:center">No agents hired from hire_list.json yet.</div>';
+    return;
+  }
+
+  // Build rows. Provider/model options are shared across rows but each
+  // row owns its own input state — a Save commits ONE row to keep the
+  // operation atomic per agent.
+  const providerOptions = providerGroups.map(g => ({value: g.group_id, label: g.label}));
+  for (const emp of employees) {
+    const row = document.createElement('div');
+    row.className = 'llm-row';
+    const provider = emp.api_provider || 'openrouter';
+    const temp = (emp.temperature !== undefined && emp.temperature !== null) ? Number(emp.temperature) : 0.7;
+    row.innerHTML = `
+      <div class="llm-row-head">
+        <span class="llm-row-name">${_escHtml(emp.name || emp.employee_number)}</span>
+        <span class="llm-row-id">#${emp.employee_number}</span>
+      </div>
+      <div class="llm-row-default" data-default-line>Default: loading...</div>
+      <div class="llm-field">
+        <span class="llm-field-label">Provider</span>
+        <select class="llm-field-input" data-field="api_provider">
+          ${providerOptions.map(o => `<option value="${o.value}"${o.value === provider ? ' selected' : ''}>${_escHtml(o.label)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="llm-field">
+        <span class="llm-field-label">Model</span>
+        <select class="llm-field-input" data-field="model">
+          <option value="">Loading…</option>
+        </select>
+      </div>
+      <div class="llm-field">
+        <span class="llm-field-label">API Key</span>
+        <input type="password" class="llm-field-input" data-field="api_key" placeholder="leave blank to inherit global key" />
+        <button class="llm-load-btn" data-action="probe-models" title="Use this API key to list models — works without saving" style="padding:5px 10px;font-size:.66rem;flex:0 0 auto;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text2);cursor:pointer;">Load</button>
+      </div>
+      <div class="llm-field">
+        <span class="llm-field-label">Temp</span>
+        <input type="number" class="llm-field-input" data-field="temperature" min="0" max="2" step="0.05" value="${temp}" />
+      </div>
+      <div class="llm-row-actions">
+        <button class="llm-save-btn" data-emp-id="${emp.employee_number}">Save</button>
+        <span class="llm-row-status" data-status></span>
+      </div>
+    `;
+    body.appendChild(row);
+
+    // Initial model list scoped to this row's current provider, and
+    // re-fetch whenever the user switches provider on this row so the
+    // dropdown actually reflects "models available from THIS provider".
+    const providerSelect = row.querySelector('[data-field="api_provider"]');
+    const modelSelect = row.querySelector('[data-field="model"]');
+    _populateModelSelect(modelSelect, provider, emp.employee_number, emp.llm_model || '');
+    providerSelect.addEventListener('change', () => {
+      // Switching provider clears the displayed model — keeping the old
+      // value would silently mismatch the new provider's catalog. User
+      // picks again, then Saves.
+      _populateModelSelect(modelSelect, providerSelect.value, emp.employee_number, '');
+    });
+
+    // "Load" button next to API Key: re-fetch the catalog using the
+    // typed-but-unsaved key. Lets the user pick a model without first
+    // doing a Save → reopen cycle just to populate the dropdown.
+    row.querySelector('[data-action="probe-models"]').addEventListener('click', async () => {
+      const typedKey = row.querySelector('[data-field="api_key"]').value;
+      // Skip cache so a freshly-typed key actually triggers a new fetch.
+      const cacheKey = `${providerSelect.value}|${emp.employee_number}|probe`;
+      modelsByKey.delete(cacheKey);
+      modelSelect.innerHTML = '<option value="">Loading…</option>';
+      modelSelect.disabled = true;
+      try {
+        const url = `/api/models?provider=${encodeURIComponent(providerSelect.value)}`
+          + `&employee_id=${encodeURIComponent(emp.employee_number)}`
+          + (typedKey ? `&api_key=${encodeURIComponent(typedKey)}` : '');
+        const resp = await fetch(url).then(r => r.json());
+        const models = (resp && resp.models) || [];
+        if (!models.length) {
+          modelSelect.innerHTML = `<option value="">⚠ ${_escHtml(resp.error || 'no models')}</option>`;
+          return;
+        }
+        const opts = [`<option value="">-- Use default model --</option>`];
+        for (const m of models) {
+          opts.push(`<option value="${_escHtml(m.id)}">${_escHtml(m.name || m.id)}</option>`);
+        }
+        modelSelect.innerHTML = opts.join('');
+      } finally {
+        modelSelect.disabled = false;
+      }
+    });
+
+    // Async-fetch the hire_list defaults so the user sees the baseline
+    // they're editing relative to. Silent on 404 — that's expected for
+    // manually-hired agents (which won't appear in this list anyway,
+    // since we filtered on talent_id, but keep the guard).
+    fetch(`/api/employee/${emp.employee_number}/hire-defaults`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const el = row.querySelector('[data-default-line]');
+        if (!el) return;
+        if (!d) { el.style.display = 'none'; return; }
+        const m = d.llm_model || '(default)';
+        const p = d.api_provider || '(default)';
+        const t = (d.temperature !== undefined) ? d.temperature : 0.7;
+        el.textContent = `Default: ${m} via ${p} (temp=${t})`;
+      });
+
+    // Per-row Save handler.
+    row.querySelector('.llm-save-btn').addEventListener('click', async (ev) => {
+      const btn = ev.target;
+      const status = row.querySelector('[data-status]');
+      const empId = btn.getAttribute('data-emp-id');
+      const get = (field) => row.querySelector(`[data-field="${field}"]`)?.value;
+      const tempStr = get('temperature');
+      const apiKey = get('api_key');
+      const body = {
+        model: get('model'),
+        api_provider: get('api_provider'),
+      };
+      if (tempStr !== undefined && tempStr !== '') {
+        const t = parseFloat(tempStr);
+        if (!Number.isNaN(t)) body.temperature = t;
+      }
+      // Empty string means "inherit global" — only persist when the user
+      // typed something so we don't clobber an existing override.
+      if (apiKey) body.api_key = apiKey;
+
+      btn.disabled = true;
+      status.textContent = 'Saving...';
+      status.className = 'llm-row-status';
+      try {
+        const resp = await fetch(`/api/employee/${empId}/llm`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          status.textContent = `✗ ${data.detail || resp.status}`;
+          status.className = 'llm-row-status err';
+        } else {
+          status.textContent = `✓ saved (${(data.updated_fields || []).join(', ')})`;
+          status.className = 'llm-row-status ok';
+          // Clear the key input post-save — masked input is write-only,
+          // re-displaying the value would be misleading.
+          const keyInput = row.querySelector('[data-field="api_key"]');
+          if (keyInput) keyInput.value = '';
+        }
+      } catch (e) {
+        status.textContent = `✗ ${e.message}`;
+        status.className = 'llm-row-status err';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+}
+
+window._openLlmSettings = _openLlmSettings;
 
 renderPipelineBar();
 </script>

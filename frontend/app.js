@@ -3545,10 +3545,14 @@ class AppController {
 
   _renderFallbackModelSection(empId, empData, container) {
     const currentProvider = empData.api_provider || 'openrouter';
+    const currentTemp = (empData.temperature !== undefined && empData.temperature !== null)
+      ? Number(empData.temperature)
+      : 0.7;
     const section = document.createElement('div');
     section.className = 'emp-detail-section-content emp-model-section';
     section.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
     section.innerHTML = `
+      <div id="emp-detail-defaults" style="font-size:5px;color:var(--text-dim);padding:1px 4px;opacity:0.75;"></div>
       <div style="display:flex;align-items:center;gap:4px;">
         <span style="font-size:6px;color:var(--pixel-yellow);min-width:45px;">Provider</span>
         <select id="emp-detail-provider" class="emp-model-select" style="flex:1;">
@@ -3558,6 +3562,14 @@ class AppController {
       <div style="display:flex;align-items:center;gap:4px;">
         <span style="font-size:6px;color:var(--pixel-yellow);min-width:45px;">Model</span>
         <select id="emp-detail-model" class="emp-model-select" style="flex:1;"><option value="">Loading...</option></select>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <span style="font-size:6px;color:var(--pixel-yellow);min-width:45px;">API Key</span>
+        <input id="emp-detail-api-key" type="password" class="emp-model-select" style="flex:1;" placeholder="leave blank to inherit global key" />
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <span style="font-size:6px;color:var(--pixel-yellow);min-width:45px;">Temp</span>
+        <input id="emp-detail-temperature" type="number" min="0" max="2" step="0.05" value="${currentTemp}" class="emp-model-select" style="flex:1;" />
       </div>
       <div style="display:flex;gap:4px;justify-content:flex-end;">
         <button id="emp-model-save-btn" class="pixel-btn small" disabled>Save</button>
@@ -3576,7 +3588,22 @@ class AppController {
           .join('');
       });
 
-    // Provider change handler
+    // Show the hire_list defaults so the user can see the original baseline
+    // they're tweaking against. Missing for manually-hired employees — drop
+    // the hint silently in that case.
+    fetch(`/api/employee/${empId}/hire-defaults`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const el = document.getElementById('emp-detail-defaults');
+        if (!el || !d) return;
+        const model = d.llm_model || '(default)';
+        const provider = d.api_provider || '(default)';
+        const temp = (d.temperature !== undefined) ? d.temperature : 0.7;
+        el.textContent = `Default: ${model} via ${provider} (temp=${temp})`;
+      });
+
+    // Provider change handler — still routes through /auth/apply because
+    // that path does the env-key wiring that /llm alone wouldn't.
     document.getElementById('emp-detail-provider').addEventListener('change', async (e) => {
       const provider = e.target.value;
       const saveBtn = document.getElementById('emp-model-save-btn');
@@ -3584,7 +3611,6 @@ class AppController {
       saveBtn.textContent = 'Switching...';
 
       try {
-        // For now, just apply the provider change (API key can be set separately)
         const resp = await fetch('/api/auth/apply', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3612,8 +3638,48 @@ class AppController {
 
     this._loadModelDropdown(empId, empData);
 
-    // Wire save button to saveEmployeeModel
-    document.getElementById('emp-model-save-btn').addEventListener('click', () => this.saveEmployeeModel());
+    // Save commits model + temperature + api_key in one atomic PUT /llm
+    // (the provider change is already applied via /auth/apply on change).
+    document.getElementById('emp-model-save-btn').addEventListener('click', () => this.saveEmployeeLlmSettings());
+  }
+
+  async saveEmployeeLlmSettings() {
+    const empId = this.viewingEmployeeId;
+    if (!empId) return;
+    const model = document.getElementById('emp-detail-model').value;
+    const temperature = parseFloat(document.getElementById('emp-detail-temperature').value);
+    const apiKey = document.getElementById('emp-detail-api-key').value;
+    const saveBtn = document.getElementById('emp-model-save-btn');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+
+    const body = {};
+    if (model !== undefined && model !== null) body.model = model;
+    if (!Number.isNaN(temperature)) body.temperature = temperature;
+    // Empty string means "inherit global" — only persist when user typed
+    // something so we don't clobber an existing override with a blank.
+    if (apiKey) body.api_key = apiKey;
+
+    try {
+      const resp = await fetch(`/api/employee/${empId}/llm`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        this.logEntry('SYSTEM', `Settings update failed: ${data.detail || data.error || resp.status}`, 'system');
+      } else {
+        this.logEntry('CEO', `✅ Updated LLM settings: ${(data.updated_fields || []).join(', ')}`, 'ceo');
+        // Clear the api_key input — masked input is write-only.
+        document.getElementById('emp-detail-api-key').value = '';
+      }
+    } catch (err) {
+      this.logEntry('SYSTEM', `Settings update failed: ${err.message}`, 'system');
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+    }
   }
 
   async _loadModelDropdown(empId, empData) {
