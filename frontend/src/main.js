@@ -140,7 +140,7 @@ async function loadProjects() {
   }
 }
 
-async function launchPipeline(topic) {
+async function launchPipeline(topic, paperOutput) {
   const btn = document.getElementById('launchBtn');
 
   if (!client || !client.ws || client.ws.readyState !== WebSocket.OPEN) {
@@ -159,12 +159,20 @@ async function launchPipeline(topic) {
 
     const stageAssignments = window._getStageAssignments ? window._getStageAssignments() : null;
 
+    // paperOutput is "markdown" | "latex:iclr2026" | "latex:neurips2026" | "docx".
+    // Split on ":" — first part is the format, optional second part is the LaTeX venue.
+    const rawOutput = (paperOutput || 'markdown').split(':');
+    const paperFormat = rawOutput[0] || 'markdown';
+    const paperVenue = rawOutput[1] || '';
+
     const result = await client.submitTask(topic, {
       projectName: `research-${Date.now()}`,
       startStage,
       endStage,
       files,
       stageAssignments,
+      paperFormat,
+      paperVenue,
     });
 
     if (result.error) {

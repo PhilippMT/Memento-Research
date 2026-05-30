@@ -47,6 +47,8 @@ export class OmcClient {
     if (config.stageAssignments) {
       form.append('stage_assignments', JSON.stringify(config.stageAssignments));
     }
+    if (config.paperFormat) form.append('paper_format', String(config.paperFormat));
+    if (config.paperVenue) form.append('paper_venue', String(config.paperVenue));
     if (config.files && config.files.length > 0) {
       for (const f of config.files) form.append('files', f);
     }
