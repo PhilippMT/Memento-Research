@@ -1847,6 +1847,119 @@ def test_find_employee_for_stage_6_code_implementer_preference_wins(monkeypatch)
     assert pe._find_stage_6b_employee() == "emp-runner"
 
 
+def test_producer_b_stub_retries_via_dispatch_producer_b(tmp_path, monkeypatch):
+    """A stub return from Stage 6b (producer_b phase) must retry 6b
+    (not 6a). The stub gate branches on ``self.phase`` to pick the
+    right dispatcher."""
+    redispatched = []
+
+    def _capture_b(self, feedback=""):
+        redispatched.append(("b", feedback))
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-runner" if skill == "experiment_runner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", _capture_b)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+
+    engine.on_task_complete("emp", "n1", "Executed: bash")
+
+    assert redispatched and redispatched[0][0] == "b", (
+        f"Stub at producer_b must retry via _dispatch_producer_b, got {redispatched!r}"
+    )
+    assert "stub" in redispatched[0][1].lower()
+
+
+def test_producer_stub_exhausted_opens_ceo_gate(tmp_path, monkeypatch):
+    """When stub-result retries hit MAX_RETRIES, the stage holds at the
+    CEO gate (rather than looping forever or auto-passing)."""
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-meth")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "producer"
+    engine.state["retries"] = pe.MAX_RETRIES  # already exhausted
+
+    engine.on_task_complete("emp", "n1", "Executed: bash")
+
+    assert engine.state["phase"] == "gate", (
+        f"Stub at exhausted retries must hold for CEO; got phase={engine.state['phase']!r}"
+    )
+
+
+def test_stage6a_hard_gate_exhausted_opens_ceo_gate(tmp_path, monkeypatch):
+    """Hard-gate retries also cap at MAX_RETRIES — beyond that the stage
+    holds at the CEO gate. Otherwise an LLM that keeps skipping Phase 5
+    would loop indefinitely."""
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-coder" if skill == "code_implementer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer"
+    engine.state["retries"] = pe.MAX_RETRIES  # already exhausted
+    # NB: no receipt file → hard-gate would fire if retries allowed
+
+    # Non-stub result so we reach the hard-gate (not the stub gate)
+    engine.on_task_complete("emp-coder", "n1", "Real-but-incomplete output (no receipt, no commits)" * 10)
+
+    assert engine.state["phase"] == "gate", (
+        f"Hard-gate exhausted must hold for CEO; got phase={engine.state['phase']!r}"
+    )
+
+
+def test_stage3_uses_file_deliverable_when_present(tmp_path, monkeypatch):
+    """Stage 3's actual deliverable is the literature-conflict-graph file
+    on disk, not the agent's chat summary. When the file exists with the
+    expected header, ``on_task_complete`` swaps the chat result for the
+    file content so the critic sees the same thing the UI renders. (PR #67.)"""
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-critic")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    # Stage 3 deliverable file with the expected header
+    stage_skill = pe.STAGES[2]["skill"]  # stage 3 is index 2 (0-based)
+    (tmp_path / f"stage3_{stage_skill}.md").write_text(
+        "# Selected Hypotheses\n\nH1: ...\nH2: ...\n",
+        encoding="utf-8",
+    )
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 3
+    engine.state["phase"] = "producer"
+
+    engine.on_task_complete("emp", "n1", "quick summary from chat, not the full graph")
+
+    # The file content (with the header) — not the chat summary — was stored
+    stored = engine.state["stage_results"]["3"]
+    assert "# Selected Hypotheses" in stored
+    assert "H1:" in stored
+
+
 def test_find_stage_6b_falls_back_to_canonical_experimentalist(monkeypatch):
     """When no experiment_runner is hired, Stage 6b falls back to the
     canonical ``experimentalist`` talent_id before any random
