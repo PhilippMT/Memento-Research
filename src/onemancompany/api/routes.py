@@ -4889,10 +4889,22 @@ async def hire_from_cv(body: dict) -> dict:
                         onboard_result = await talent_market.onboard(talent_id)
                         repo_url = onboard_result.get("repo_url", "")
                     except Exception as e:
-                        await _publish_cv_error(
-                            f"Failed to fetch repo URL for talent '{talent_id}' from Talent Market ({tm_url}): {e}"
+                        # Pure-prompt talents (no tools) carry everything they need
+                        # in the CV (system_prompt_template + skills) and require no
+                        # repo assets. When the Talent Market is unreachable, degrade
+                        # gracefully to a CV-only hire instead of aborting, so the
+                        # AutoResearch roster still bootstraps offline. Talents that
+                        # DO declare tools genuinely need their repo → keep failing.
+                        if cv.get("tools"):
+                            await _publish_cv_error(
+                                f"Failed to fetch repo URL for talent '{talent_id}' from Talent Market ({tm_url}): {e}"
+                            )
+                            return
+                        logger.warning(
+                            "[cv_hire] Talent Market unreachable for '{}' ({}); it declares "
+                            "no tools, so registering from CV data only.", talent_id, e
                         )
-                        return
+                        repo_url = ""
                 if not repo_url:
                     # AI-generated / repo-less talents: skip clone, proceed with hire using CV data
                     logger.info("[cv_hire] Talent '{}' has no repo URL — skipping clone, hiring with CV data only", talent_id)
