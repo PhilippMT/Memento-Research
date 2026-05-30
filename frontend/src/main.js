@@ -106,6 +106,10 @@ async function refreshEmployees() {
       name: e.name || e.nickname,
       skills: e.skills || [],
       role: e.role || '',
+      // talent_id is what STAGES.talent matches against to surface the
+      // canonical default agent per stage (vs the "Auto" fallback). Must
+      // be propagated through the projection or the lookup always misses.
+      talent_id: e.talent_id || '',
     }));
     _pruneStageAssignments();
     if (window._renderRangeSelector) window._renderRangeSelector();
