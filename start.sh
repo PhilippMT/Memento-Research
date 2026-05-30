@@ -170,7 +170,8 @@ init_data() {
 
 # Set to 1 by start_backend when it had to bootstrap the data dir from
 # scratch. The `start` case reads this to decide whether to auto-hire the
-# founding roster after the backend comes up.
+# founding roster after the backend comes up. `restart` always wipes the
+# data dir and always hires explicitly, so it does not depend on this flag.
 BOOTSTRAPPED=0
 
 start_backend() {
@@ -197,11 +198,20 @@ start_backend() {
 
   for _ in $(seq 1 15); do
     if [ -n "$(listener_pids)" ]; then
-      # Listening confirms the port is bound; "Backend ready" is printed
-      # by the caller after the founding roster is hired so the user only
-      # opens the page once the app is actually usable.
       info "Backend listening on :$port"
-      return 0
+      # Port-bind happens before FastAPI's startup hooks finish mounting
+      # routes. Poll /api/bootstrap (the same endpoint the frontend hits
+      # on page load) so the next caller — typically hire_from_list —
+      # doesn't race the route table.
+      for _ in $(seq 1 30); do
+        if curl -sf -o /dev/null -m 2 "http://localhost:$port/api/bootstrap"; then
+          return 0
+        fi
+        sleep 1
+      done
+      warn "Backend port is open but /api/bootstrap not responding. Last log lines:"
+      tail -10 "$LOG" || true
+      exit 1
     fi
     sleep 1
   done
@@ -263,10 +273,11 @@ case "$COMMAND" in
     start_backend
     # Only auto-hire if start_backend had to bootstrap an empty data dir;
     # otherwise we'd duplicate-hire on top of an existing roster.
+    port="$(resolve_port)"
     if [ "$BOOTSTRAPPED" -eq 1 ]; then
       hire_from_list
     fi
-    info "Backend ready at http://localhost:$(resolve_port)"
+    info "Backend ready at http://localhost:$port"
     ;;
   status)
     status_backend
@@ -275,8 +286,9 @@ case "$COMMAND" in
     stop_backend
     init_data
     start_backend
+    port="$(resolve_port)"
     hire_from_list
-    info "Backend ready at http://localhost:$(resolve_port)"
+    info "Backend ready at http://localhost:$port"
     ;;
   *)
     error "Unknown command: $COMMAND. Run 'bash start.sh --help' for usage."
