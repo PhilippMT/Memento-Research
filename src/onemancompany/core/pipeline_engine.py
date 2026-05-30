@@ -40,6 +40,22 @@ STAGES = [
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
 
+# Canonical default employee per stage, sourced from company/hire_list.json.
+# When multiple hired employees share the same skill, the one originating
+# from the canonical talent_id wins. Falls back to skill-based lookup if
+# the canonical talent is not on the roster.
+STAGE_TALENT_DEFAULTS = {
+    1: "topic-refiner",
+    2: "literature-surveyor",
+    3: "idea-generator",
+    4: "methodology-designer",
+    5: "experiment-designer",
+    6: "experimentalist",
+    7: "result-analyst",
+    8: "paper-writer",
+    9: "paper-reviewer",
+}
+
 # Iteration identifier used in git tag names (``<iteration>/stage-<N>``).
 # The literal directory name (e.g. ``iter_001``) is fine — git tag names
 # allow underscores. Centralised here so the engine and project_repo
@@ -89,25 +105,61 @@ def _find_employee_by_skill(skill: str) -> str | None:
     return None
 
 
+def _find_employee_by_talent_id(talent_id: str) -> str | None:
+    """Find the first employee whose ``talent_id`` matches.
+
+    ``talent_id`` is the hire_list.json identifier carried forward by
+    ``execute_hire`` so the pipeline can route each stage to the canonical
+    default talent rather than any arbitrary employee that happens to
+    share the same skill.
+    """
+    if not talent_id:
+        return None
+    configs = load_employee_configs()
+    for emp_id, cfg in configs.items():
+        if getattr(cfg, "talent_id", "") == talent_id:
+            return emp_id
+    return None
+
+
 def _find_employee_for_stage(stage_id: int, primary_skill: str) -> str | None:
     """Resolve the producer employee for a stage with stage-specific fallbacks.
 
-    Stage 6 has a two-step producer flow: Stage 6a (code_implementer) writes
-    the experiment code, Stage 6b (experiment_runner) executes it on remote
-    infra. The initial producer dispatch maps to 6a. Stage 6b uses
-    :func:`_find_stage_6b_employee`.
+    Resolution order:
+      1. Stage 6 only: a ``code_implementer`` employee (Stage 6a). The
+         two-step Stage 6 producer flow writes the experiment code (6a)
+         then executes it on remote infra (6b — see
+         :func:`_find_stage_6b_employee`). The initial producer dispatch
+         maps to 6a; 6b is dispatched by ``on_task_complete``.
+      2. The canonical hire_list talent for the stage
+         (see ``STAGE_TALENT_DEFAULTS``).
+      3. Any employee whose skills include ``primary_skill``.
     """
     if stage_id == 6:
-        return _find_employee_by_skill("code_implementer")
+        coder = _find_employee_by_skill("code_implementer")
+        if coder:
+            return coder
+        # Fall through to canonical/skill lookup so single-employee fixtures
+        # still find SOMETHING when no dedicated code_implementer is hired.
+    canonical = _find_employee_by_talent_id(STAGE_TALENT_DEFAULTS.get(stage_id, ""))
+    if canonical:
+        return canonical
     return _find_employee_by_skill(primary_skill)
 
 
 def _find_stage_6b_employee() -> str | None:
-    """Resolve the Stage 6b runner employee (experiment_runner skill, with
-    `experimentalist` as a last-resort fallback for simulated reports)."""
+    """Resolve the Stage 6b runner employee.
+
+    Order: ``experiment_runner`` skill (real remote-infra runner) →
+    canonical ``experimentalist`` talent_id (PR #67's hire_list mapping) →
+    any ``experimentalist`` skill (last-resort simulated-report fallback).
+    """
     runner = _find_employee_by_skill("experiment_runner")
     if runner:
         return runner
+    canonical = _find_employee_by_talent_id(STAGE_TALENT_DEFAULTS.get(6, "experimentalist"))
+    if canonical:
+        return canonical
     return _find_employee_by_skill("experimentalist")
 
 

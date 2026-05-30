@@ -1168,6 +1168,7 @@ async def execute_hire(
         probation=True,
         onboarding_completed=False,
         avatar_sprite=avatar_sprite_num,
+        talent_id=talent_id,
     )
     logger.debug("[execute_hire] Created Employee object: id={}, nickname={}, dept={}", emp_num, nickname, department)
     # Persist profile via store (single source of truth)
@@ -1194,6 +1195,7 @@ async def execute_hire(
         "probation": True,
         "onboarding_completed": False,
         "avatar_sprite": avatar_sprite_num,
+        "talent_id": talent_id,
     })
     await _store.save_employee_runtime(emp_num, status=STATUS_IDLE)
 

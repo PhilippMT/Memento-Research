@@ -562,6 +562,7 @@ class EmployeeConfig(BaseModel):
     hosting: str = "company"  # "company" | "omctalent" | "self" | "openclaw" — also serves as agent family selector
     auth_method: str = "api_key"  # "api_key" | "oauth" (OAuth PKCE for Anthropic)
     oauth_refresh_token: str = ""  # OAuth refresh token (long-lived)
+    talent_id: str = ""  # hire_list.json talent_id; preserved so the pipeline can route stages to canonical hires
 
     # Fields where empty string should be treated as missing (use field default)
     _NON_EMPTY_FIELDS: ClassVar[frozenset] = frozenset({"api_provider", "hosting", "auth_method"})

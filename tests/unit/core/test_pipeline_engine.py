@@ -1759,3 +1759,104 @@ def test_stage8_desc_reuses_stage4_figure_does_not_regenerate():
         "Stage 8 desc must explicitly forbid figure regeneration"
     )
     assert "Abstract" in stage8 and "Reproducibility" in stage8
+
+
+# ---------------------------------------------------------------------------
+# STAGE_TALENT_DEFAULTS — canonical default employee per stage from hire_list
+# (PR #67, merged into the 6a/6b architecture)
+# ---------------------------------------------------------------------------
+
+def _talent_config(name: str, skills: list[str], talent_id: str = "") -> SimpleNamespace:
+    return SimpleNamespace(name=name, skills=skills, talent_id=talent_id)
+
+
+def test_stage_talent_defaults_maps_each_stage_to_hire_list_talent():
+    """Every pipeline stage (1..9) must have a canonical default talent
+    drawn from company/hire_list.json so the producer is deterministic
+    when multiple hired employees share the same skill."""
+    import json
+    from pathlib import Path
+
+    expected_stages = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+    assert set(pe.STAGE_TALENT_DEFAULTS.keys()) == expected_stages
+
+    hire_list_path = Path(pe.__file__).resolve().parents[3] / "company" / "hire_list.json"
+    talent_ids = {e["talent_id"] for e in json.loads(hire_list_path.read_text())}
+    for sid, tid in pe.STAGE_TALENT_DEFAULTS.items():
+        assert tid in talent_ids, f"Stage {sid} default '{tid}' not in hire_list.json"
+
+
+def test_find_employee_by_talent_id_returns_matching_employee(monkeypatch):
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "00010": _talent_config("Topic A", ["topic_refiner"], talent_id="other"),
+            "00011": _talent_config("Topic B", ["topic_refiner"], talent_id="topic-refiner"),
+        },
+    )
+    assert pe._find_employee_by_talent_id("topic-refiner") == "00011"
+    assert pe._find_employee_by_talent_id("missing") is None
+
+
+def test_find_employee_for_stage_prefers_canonical_talent(monkeypatch):
+    """Two employees both carry the stage's primary skill — the one hired
+    from the canonical hire_list talent_id wins."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-clone": _talent_config("Clone", ["topic_refiner"], talent_id=""),
+            "emp-canon": _talent_config("Canon", ["topic_refiner"], talent_id="topic-refiner"),
+        },
+    )
+    assert pe._find_employee_for_stage(1, "topic_refiner") == "emp-canon"
+
+
+def test_find_employee_for_stage_falls_back_to_skill_when_no_canonical(monkeypatch):
+    """No employee carries the canonical talent_id — fall back to the
+    existing skill-based lookup so the pipeline still runs."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-clone": _talent_config("Clone", ["topic_refiner"], talent_id=""),
+        },
+    )
+    assert pe._find_employee_for_stage(1, "topic_refiner") == "emp-clone"
+
+
+def test_find_employee_for_stage_6_code_implementer_preference_wins(monkeypatch):
+    """Stage 6's initial dispatch is Stage 6a — a ``code_implementer``
+    employee wins over both the canonical experimentalist talent AND any
+    experiment_runner on the roster (the runner is reserved for Stage 6b,
+    dispatched separately by ``on_task_complete``)."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-canon": _talent_config("Sim", ["experimentalist"], talent_id="experimentalist"),
+            "emp-runner": _talent_config("Runner", ["experiment_runner"], talent_id="experiment-runner"),
+            "emp-coder": _talent_config("Coder", ["code_implementer"], talent_id="experiment-code-writer"),
+        },
+    )
+    # Stage 6a — code_implementer wins
+    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-coder"
+    # Stage 6b — experiment_runner wins (canonical "experimentalist" is the
+    # last-resort fallback below it; runner skill is the primary preference)
+    assert pe._find_stage_6b_employee() == "emp-runner"
+
+
+def test_find_stage_6b_falls_back_to_canonical_experimentalist(monkeypatch):
+    """When no experiment_runner is hired, Stage 6b falls back to the
+    canonical ``experimentalist`` talent_id before any random
+    experimentalist-skilled employee."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-clone": _talent_config("Clone", ["experimentalist"], talent_id=""),
+            "emp-canon": _talent_config("Canon", ["experimentalist"], talent_id="experimentalist"),
+        },
+    )
+    assert pe._find_stage_6b_employee() == "emp-canon"
