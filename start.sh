@@ -245,16 +245,26 @@ with open('$hire_file', encoding='utf-8') as f:
     hires = json.load(f)
 
 for cv in hires:
-    body = json.dumps({'cv': cv}).encode()
+    # sync=True blocks until execute_hire returns so the next iteration —
+    # and the eventual 'Backend ready' line in start.sh — can rely on the
+    # employee actually being on the roster. Without this the POST returns
+    # immediately while clone_talent_repo + execute_hire run in the
+    # background, and the frontend's first /api/bootstrap call sees an
+    # empty roster (pipeline stages then fall back to 'auto').
+    body = json.dumps({'cv': cv, 'sync': True}).encode()
     req = urllib.request.Request(
         'http://localhost:$port/api/candidates/hire-from-cv',
         data=body,
         headers={'Content-Type': 'application/json'},
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
+        # Talent-Market clone + execute_hire can be slow on first run; give
+        # each CV plenty of headroom rather than racing the default timeout.
+        resp = urllib.request.urlopen(req, timeout=180)
         result = json.loads(resp.read())
-        print(f'  ✓ {cv[\"name\"]}: {result.get(\"message\", result)}')
+        status = result.get('status', result)
+        marker = '✓' if status == 'hired' else '✗'
+        print(f'  {marker} {cv[\"name\"]}: {status}')
     except Exception as e:
         print(f'  ✗ {cv[\"name\"]}: {e}')
 "

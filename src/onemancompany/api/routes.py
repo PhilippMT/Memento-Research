@@ -4875,7 +4875,12 @@ async def hire_from_cv(body: dict) -> dict:
             agent="HR",
         ))
 
-    async def _do_cv_hire():
+    async def _do_cv_hire() -> bool:
+        """Run the hire flow. Returns True iff the employee was actually
+        registered. All failure paths publish a TALENT_PROFILE_ERROR event
+        and return False so `sync=True` callers (start.sh) can report the
+        outcome accurately. The async CEO-driven path ignores the return
+        value — failures still surface via the event bus."""
         try:
             # Clone talent repo so copy_talent_assets can copy skills/tools/manifest
             if talent_id:
@@ -4899,7 +4904,7 @@ async def hire_from_cv(body: dict) -> dict:
                             await _publish_cv_error(
                                 f"Failed to fetch repo URL for talent '{talent_id}' from Talent Market ({tm_url}): {e}"
                             )
-                            return
+                            return False
                         logger.warning(
                             "[cv_hire] Talent Market unreachable for '{}' ({}); it declares "
                             "no tools, so registering from CV data only.", talent_id, e
@@ -4915,7 +4920,7 @@ async def hire_from_cv(body: dict) -> dict:
                         await _publish_cv_error(
                             f"Failed to clone talent repo '{repo_url}' for '{talent_id}': {e}"
                         )
-                        return
+                        return False
                     if not resolve_talent_dir(talent_id):
                         from onemancompany.core.config import TALENTS_RUNTIME_DIR
                         cloned_dirs = [d for d in TALENTS_RUNTIME_DIR.iterdir() if d.is_dir()]
@@ -4923,7 +4928,7 @@ async def hire_from_cv(body: dict) -> dict:
                             f"Talent repo cloned but directory not found for '{talent_id}'. "
                             f"Available: {[d.name for d in cloned_dirs]}. Add 'source_repo' to CV pointing directly to the talent repo."
                         )
-                        return
+                        return False
 
             emp = await execute_hire(
                 name=name,
@@ -4953,11 +4958,26 @@ async def hire_from_cv(body: dict) -> dict:
                     f"Determine the role based on the employee's name and skills.\n\n"
                     f"- {name}（{nickname}）#{emp.id}",
                 )
+            return True
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.exception("[cv_hire] Failed to hire {}", name)
             await _publish_cv_error(f"Onboarding failed for '{name}': {e}")
+            return False
+
+    # `sync=True` is used by `start.sh`'s hire_from_list bootstrap: the script
+    # needs the POST to block until the employee is actually on the roster so
+    # the frontend doesn't load /api/bootstrap while hires are still in flight.
+    # The CEO-driven UI hire path (default) keeps the fire-and-forget flow so
+    # progress events stream via WebSocket without holding the request open.
+    if body.get("sync"):
+        ok = await _do_cv_hire()
+        return {
+            "status": "hired" if ok else "failed",
+            "name": name,
+            "role": role,
+        }
 
     spawn_background(_do_cv_hire())
     return {"status": "onboarding", "name": name, "role": role, "message": "Onboarding started in background"}
