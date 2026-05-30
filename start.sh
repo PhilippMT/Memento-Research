@@ -262,7 +262,9 @@ for cv in hires:
         # each CV plenty of headroom rather than racing the default timeout.
         resp = urllib.request.urlopen(req, timeout=180)
         result = json.loads(resp.read())
-        print(f'  ✓ {cv[\"name\"]}: {result.get(\"status\", result)}')
+        status = result.get('status', result)
+        marker = '✓' if status == 'hired' else '✗'
+        print(f'  {marker} {cv[\"name\"]}: {status}')
     except Exception as e:
         print(f'  ✗ {cv[\"name\"]}: {e}')
 "

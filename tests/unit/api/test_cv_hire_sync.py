@@ -19,19 +19,26 @@ def _cv(talent_id: str = "topic-refiner"):
     }
 
 
-def _patched_run(body):
+def _patched_run(body, *, exec_side_effect=None):
     """Run ``hire_from_cv(body)`` with execute_hire / nickname / onboard /
-    event_bus mocked. Returns (spawn_calls, exec_mock, response)."""
+    event_bus mocked. Returns (spawn_calls, exec_mock, response).
+
+    The async-mode coroutine is captured but NOT awaited — the routing
+    assertion (``spawn_calls == 1``) is what we care about, and running
+    the body would re-cover the offline-fallback test's scope.
+    """
     spawn_calls = []
 
     def _capture(coro):
         spawn_calls.append(coro)
-        # Drain the coroutine so we don't leak warnings.
-        coro.close()
+        coro.close()  # close to suppress "coroutine was never awaited" warnings
         return AsyncMock()
 
     onboard_mock = AsyncMock(return_value={"repo_url": ""})
-    exec_mock = AsyncMock(return_value=type("E", (), {"id": "00099"})())
+    if exec_side_effect is not None:
+        exec_mock = AsyncMock(side_effect=exec_side_effect)
+    else:
+        exec_mock = AsyncMock(return_value=type("E", (), {"id": "00099"})())
     publish_mock = AsyncMock()
 
     with patch.object(routes, "spawn_background", _capture), \
@@ -63,3 +70,20 @@ def test_sync_mode_awaits_hire_inline_and_returns_hired_status():
     assert exec_mock.await_count == 1, "sync mode must await execute_hire before responding"
     assert spawn_calls == [], "sync mode must not use spawn_background"
     assert response["status"] == "hired"
+
+
+def test_sync_mode_reports_failed_status_when_hire_raises():
+    """Regression: ``_do_cv_hire`` used to swallow every failure path and
+    return None. Sync mode then misreported ``status=hired`` even when no
+    employee was actually registered, so start.sh printed ✓ on broken
+    hires. The endpoint must surface failure as ``status=failed`` so the
+    bootstrap loop can distinguish real successes from silent failures."""
+    spawn_calls, exec_mock, response = _patched_run(
+        {"cv": _cv(), "sync": True},
+        exec_side_effect=RuntimeError("execute_hire blew up"),
+    )
+    assert exec_mock.await_count == 1, "execute_hire must have been attempted"
+    assert response["status"] == "failed", (
+        "sync mode must report failure when _do_cv_hire's happy-path return "
+        "was not reached"
+    )
