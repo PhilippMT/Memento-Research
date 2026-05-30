@@ -435,12 +435,86 @@ def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedbac
         assert all(fb == "" for _, fb in redispatched), f"unexpected redispatch with feedback: {redispatched}"
 
 
-def test_parse_critic_decision_and_confidence():
-    assert pe.PipelineEngine._parse_critic_pass("reject: weak evidence") is False
-    assert pe.PipelineEngine._parse_critic_pass("pass: strong enough") is True
-    assert pe.PipelineEngine._parse_critic_pass("looks fine") is True
+def test_parse_critic_decision_and_confidence(tmp_path):
+    # ``_parse_critic_pass`` is now an instance method (it reaches for the
+    # on-disk gate-review file as a stub-recovery fallback) — needs an engine.
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+
+    assert engine._parse_critic_pass("reject: weak evidence") is False
+    assert engine._parse_critic_pass("pass: strong enough") is True
+    # Default-REJECT on ambiguity (was: default PASS, the silent-auto-approve
+    # loophole behind #60 / #63).
+    assert engine._parse_critic_pass("looks fine") is False
+    # Table-format verdict (#60 fix 4).
+    assert engine._parse_critic_pass("| Decision | PASS |") is True
+    assert engine._parse_critic_pass("| **Decision** | **REJECT** |") is False
+
     assert pe.PipelineEngine._parse_confidence("Confidence: 1.0") == 1.0
     assert pe.PipelineEngine._parse_confidence("no score") is None
+
+
+def test_parse_critic_pass_stub_falls_back_to_disk(tmp_path):
+    """When the critic submits a stub like ``"Executed: bash"``, parser must
+    fall back to reading ``stage{N}_gate_review.md`` from disk and verdict
+    against THAT content. Default to REJECT if neither yields a signal."""
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    # Case A: stub + on-disk gate review exists with a PASS verdict
+    gate_review = tmp_path / "stage6_gate_review.md"
+    gate_review.write_text("# Gate Review\n\n| Decision | PASS |\n\nConfidence 0.92.")
+    assert engine._parse_critic_pass("Executed: bash") is True, (
+        "Stub critic result + on-disk PASS should resolve to PASS"
+    )
+
+    # Case B: stub + on-disk gate review with REJECT
+    gate_review.write_text("# Gate Review\n\n| Decision | REJECT |\n\nMissing run_ids.")
+    assert engine._parse_critic_pass("Executed: bash") is False
+
+    # Case C: stub + no on-disk file → default REJECT (safer than auto-PASS)
+    gate_review.unlink()
+    assert engine._parse_critic_pass("Executed: bash") is False, (
+        "Stub critic result + no fallback file should default to REJECT (not PASS)"
+    )
+
+
+def test_cap_for_critic_trims_oversized_producer_output():
+    """#62: critic's input must stay under a soft budget so late-stage
+    runs don't blow Kimi-K2.6's 262K context window. Cap keeps head +
+    tail with an explicit elision marker."""
+    # Under budget: passed through unchanged
+    short = "x" * 10_000
+    assert pe.PipelineEngine._cap_for_critic(short, stage_id=4) == short
+    # Empty → empty
+    assert pe.PipelineEngine._cap_for_critic("", stage_id=4) == ""
+    # Over budget: head + elision marker + tail
+    head = "HEAD" + ("a" * 49_996)        # exactly 50K
+    middle = "M" * 200_000                # 200K elided
+    tail = ("z" * 24_996) + "TAIL"        # exactly 25K
+    big = head + middle + tail
+    out = pe.PipelineEngine._cap_for_critic(big, stage_id=6)
+    assert out.startswith("HEAD"), "Head bytes must be preserved"
+    assert out.endswith("TAIL"), "Tail bytes must be preserved"
+    assert "elided" in out, "Elision marker must be present"
+    assert len(out) < len(big), "Output must be shorter than input"
+    # Total budget respected (head + tail + ~120-byte marker)
+    assert len(out) <= 80_000 + 200, f"Capped output exceeded budget: {len(out)}"
+
+
+def test_is_stub_result():
+    """Stub detection — used by parser fallback and (future) producer
+    stub-detection gates. ``"Executed: ..."``-style outputs come from
+    the agent runtime falling back to tool-name summaries when the LLM
+    returned no text content."""
+    assert pe.PipelineEngine._is_stub_result("Executed: bash") is True
+    assert pe.PipelineEngine._is_stub_result("Executed tools: write, read, bash") is True
+    assert pe.PipelineEngine._is_stub_result("") is True
+    assert pe.PipelineEngine._is_stub_result("# Gate Review\n\n## Decision\n\nPASS — 0.95 confidence.\n\nFull analysis follows... " + "x" * 350) is False
+    # Length threshold: a "Executed: ..." prefix that's followed by a kilobyte
+    # of real tool output is not a stub.
+    long_executed = "Executed: bash\n" + "real captured output line\n" * 50
+    assert pe.PipelineEngine._is_stub_result(long_executed) is False
 
 
 def test_parse_confidence_handles_unparseable_match(monkeypatch):
@@ -656,24 +730,35 @@ def test_dispatch_producer_stage5_trigger_not_in_stage4_or_other(tmp_path, monke
 # Stage 6 (Auto Experiment) — runner preference + experiment-infra trigger
 # ---------------------------------------------------------------------------
 
-def test_find_employee_for_stage_6_prefers_runner_over_experimentalist(monkeypatch):
-    """When both an experiment_runner and an experimentalist are on the
-    roster, Stage 6 must route to the runner — they hold the experiment-infra
-    runbook and can actually fire remote infra."""
+def test_find_employee_for_stage_6_resolves_code_implementer(monkeypatch):
+    """Stage 6's first dispatch maps to the code_implementer (Stage 6a).
+    The experiment_runner is the *second* dispatch (Stage 6b) — see
+    ``_find_stage_6b_employee``."""
+    by_skill = {
+        "code_implementer": "emp-coder-027",
+        "experiment_runner": "emp-runner-025",
+    }
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
+    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-coder-027"
+
+
+def test_find_stage_6b_employee_prefers_runner_over_experimentalist(monkeypatch):
+    """Stage 6b's runner resolution prefers the experiment_runner (real
+    remote infra) over the experimentalist (simulator-only)."""
     by_skill = {
         "experiment_runner": "emp-runner-007",
         "experimentalist": "emp-sim-001",
     }
     monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
-    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-runner-007"
+    assert pe._find_stage_6b_employee() == "emp-runner-007"
 
 
-def test_find_employee_for_stage_6_falls_back_to_experimentalist(monkeypatch):
-    """No experiment_runner on roster — Stage 6 falls back to the existing
+def test_find_stage_6b_employee_falls_back_to_experimentalist(monkeypatch):
+    """No experiment_runner on roster — Stage 6b falls back to the
     experimentalist so the pipeline still runs (degraded, simulation only)."""
     by_skill = {"experimentalist": "emp-sim-001"}
     monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
-    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-sim-001"
+    assert pe._find_stage_6b_employee() == "emp-sim-001"
 
 
 def test_find_employee_for_stage_5_unchanged_no_runner_fallback(monkeypatch):
@@ -688,12 +773,13 @@ def test_find_employee_for_stage_5_unchanged_no_runner_fallback(monkeypatch):
     assert pe._find_employee_for_stage(5, "experiment_designer") == "emp-designer-006"
 
 
-def test_dispatch_producer_stage6_injects_execution_runbook_trigger(tmp_path, monkeypatch):
-    """Stage 6 producer task description must instruct the agent to load
-    the experiment-execution-runbook skill (which itself names experiment-infra)."""
+def test_dispatch_producer_stage6_injects_code_implementation_runbook_trigger(tmp_path, monkeypatch):
+    """Stage 6's first producer dispatch is Stage 6a — the code implementer.
+    Its description must instruct the agent to load the
+    code-implementation-runbook (which carries the upstream-pin Phase 0)."""
     dispatched = []
     monkeypatch.setattr(pe, "_find_employee_by_skill",
-                        lambda skill: "emp-runner-007" if skill == "experiment_runner" else None)
+                        lambda skill: "emp-coder-027" if skill == "code_implementer" else None)
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
                         lambda self, *args: dispatched.append(args))
@@ -704,26 +790,25 @@ def test_dispatch_producer_stage6_injects_execution_runbook_trigger(tmp_path, mo
     engine.state["current_stage"] = 6
     engine._dispatch_producer()
 
-    assert dispatched, "Stage 6 producer must dispatch"
+    assert dispatched, "Stage 6a producer must dispatch"
     desc = dispatched[0][1]
-    assert 'load_skill("experiment-execution-runbook")' in desc, (
-        "Stage 6 task description must instruct the producer to load the execution runbook"
+    assert 'load_skill("code-implementation-runbook")' in desc, (
+        "Stage 6a task description must instruct the producer to load "
+        "code-implementation-runbook (Phase 0 honours the upstream pin)"
     )
-    assert "experiment-infra" in desc, (
-        "Stage 6 task description must mention the experiment-infra runbook so the "
-        "agent knows the fast_*.sh scripts are available for remote rows"
+    assert "stage5_codebase_pin.md" in desc or "pin" in desc.lower(), (
+        "Stage 6a task description must reference the Stage 5 codebase pin"
     )
 
 
-def test_dispatch_producer_stage6_routes_to_experiment_runner_employee(tmp_path, monkeypatch):
-    """Stage 6 dispatch resolution must reach the experiment_runner
-    employee (not whoever owns the 'experimentalist' skill) when a runner
-    is on the roster."""
+def test_dispatch_producer_stage6_routes_to_code_implementer_employee(tmp_path, monkeypatch):
+    """Stage 6's first dispatch resolves to the code_implementer
+    (not the experiment_runner — that comes in the 6b second pass)."""
     dispatched = []
     monkeypatch.setattr(
         pe, "_find_employee_by_skill",
-        lambda skill: {"experiment_runner": "emp-runner",
-                       "experimentalist": "emp-sim"}.get(skill),
+        lambda skill: {"code_implementer": "emp-coder",
+                       "experiment_runner": "emp-runner"}.get(skill),
     )
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
@@ -735,8 +820,164 @@ def test_dispatch_producer_stage6_routes_to_experiment_runner_employee(tmp_path,
     engine.state["current_stage"] = 6
     engine._dispatch_producer()
 
-    assert dispatched == ["emp-runner"], (
-        f"Expected dispatch to experiment_runner employee, got {dispatched}"
+    assert dispatched == ["emp-coder"], (
+        f"Expected first Stage 6 dispatch to code_implementer, got {dispatched}"
+    )
+
+
+def test_dispatch_producer_b_stage6_injects_execution_runbook_trigger(tmp_path, monkeypatch):
+    """Stage 6b's producer dispatch must instruct the agent to load the
+    experiment-execution-runbook and reference the implementation receipt
+    from Stage 6a."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-runner-025" if skill == "experiment_runner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine._dispatch_producer_b()
+
+    assert dispatched, "Stage 6b producer must dispatch"
+    emp_id, desc, title = dispatched[0]
+    assert emp_id == "emp-runner-025"
+    assert 'load_skill("experiment-execution-runbook")' in desc, (
+        "Stage 6b task description must instruct the runner to load the execution runbook"
+    )
+    assert "stage6_implementation_receipt.md" in desc, (
+        "Stage 6b must reference Stage 6a's implementation receipt"
+    )
+
+
+def test_stage6_phase_transitions_producer_to_producer_b_to_critic(tmp_path, monkeypatch):
+    """On a successful Stage 6 run, on_task_complete must walk the
+    producer → producer_b → critic transition (not jump straight to
+    the critic on producer completion)."""
+    transitions = []
+
+    def _capture_phase(self, *a, **kw):
+        transitions.append(self.state["phase"])
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: {"code_implementer": "emp-coder",
+                                       "experiment_runner": "emp-runner",
+                                       pe.CRITIC_SKILL: "emp-critic"}.get(skill))
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: _capture_phase(self))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    # Satisfy the Stage 6a hard-gate: receipt file must exist (>= 200 bytes),
+    # and no upstream/ git repo means the uncommitted-patches check is skipped.
+    (tmp_path / "stage6_implementation_receipt.md").write_text(
+        "# Receipt\n" + "x" * 250  # > 200-byte threshold
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    engine._dispatch_producer()                       # → producer (6a)
+    engine.on_task_complete("emp-coder", "n1", "6a receipt")  # → producer_b
+    engine.on_task_complete("emp-runner", "n2", "6b report")  # → critic
+
+    assert transitions == ["producer", "producer_b", "critic"], (
+        f"Expected producer → producer_b → critic, got {transitions}"
+    )
+    # 6a result is stored separately; 6b's report is the canonical stage 6 result
+    assert engine.state["stage_6a_result"] == "6a receipt"
+    assert engine.state["stage_results"]["6"] == "6b report"
+
+
+def test_producer_stub_result_retries_instead_of_advancing(tmp_path, monkeypatch):
+    """When a producer returns a stub like ``"Executed: bash"`` (agent
+    runtime fallback when LLM produced no text), the engine MUST retry
+    the producer with feedback rather than store the stub as the stage
+    deliverable. Closes #60 fix #2.
+
+    Old behaviour: stub → stored as stage_result → critic gets tool-name
+    summary → ``_parse_critic_pass`` defaulted to PASS on ambiguity →
+    NOT TESTED paper marches on."""
+    feedbacks = []
+    orig = pe.PipelineEngine._dispatch_producer
+    def _capturing(self, feedback=""):
+        feedbacks.append(feedback)
+        return orig(self, feedback=feedback)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", _capturing)
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-meth")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4  # any non-stage-6 stage; stub gate is universal
+
+    engine._dispatch_producer()  # initial dispatch
+    # Producer returns a stub
+    engine.on_task_complete("emp", "n1", "Executed: bash")
+
+    assert engine.state["retries"] == 1, "Stub result should bump retries, not advance"
+    assert any("stub" in fb.lower() for fb in feedbacks), (
+        f"Retry feedback must name the stub failure mode; got {feedbacks!r}"
+    )
+    # Stage result must NOT have been stored (otherwise critic would see it)
+    assert "4" not in engine.state.get("stage_results", {}), (
+        "Stub result must not pollute stage_results"
+    )
+
+
+def test_stage6a_hard_gate_retries_on_missing_receipt(tmp_path, monkeypatch):
+    """If Stage 6a producer finishes WITHOUT producing
+    stage6_implementation_receipt.md, the engine must retry the producer
+    (with feedback explaining the gap) rather than silently advancing to
+    Stage 6b — which would always BLOCK on missing receipt and burn a full
+    6a → 6b → critic cycle. Closes #63's fix #4."""
+    dispatched_phases = []
+    feedbacks = []
+
+    def _capture(self, *args, **kw):
+        dispatched_phases.append(self.state["phase"])
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: {"code_implementer": "emp-coder",
+                                       "experiment_runner": "emp-runner",
+                                       pe.CRITIC_SKILL: "emp-critic"}.get(skill))
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: _capture(self))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+    # Capture the feedback string the retry receives
+    orig_dispatch_producer = pe.PipelineEngine._dispatch_producer
+    def _capturing_dispatch_producer(self, feedback=""):
+        feedbacks.append(feedback)
+        return orig_dispatch_producer(self, feedback=feedback)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", _capturing_dispatch_producer)
+
+    # Do NOT create the receipt file — gate should fail
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    engine._dispatch_producer()  # initial 6a dispatch
+    engine.on_task_complete("emp-coder", "n1", "incomplete 6a output")
+
+    # After hard-gate failure, retry should re-dispatch producer (not advance)
+    assert dispatched_phases[-1] == "producer", (
+        f"Hard-gate failure should retry producer, got phases {dispatched_phases}"
+    )
+    # Retry count incremented
+    assert engine.state["retries"] == 1
+    # Feedback should mention the missing receipt
+    assert any("stage6_implementation_receipt.md" in fb for fb in feedbacks), (
+        f"Retry feedback must name the missing receipt; got {feedbacks!r}"
     )
 
 
@@ -764,8 +1005,8 @@ def test_dispatch_critic_stage6_injects_evidence_grading(tmp_path, monkeypatch):
 
 
 def test_stage6_trigger_not_in_stage4_or_stage5(tmp_path, monkeypatch):
-    """Stage 6 triggers (execution-runbook + run_id grading) must be
-    stage-scoped — earlier stages must not carry them."""
+    """Stage 6 triggers (code-impl-runbook + execution-runbook + run_id
+    grading) must be stage-scoped — earlier stages must not carry them."""
     dispatched = []
     monkeypatch.setattr(pe, "_find_employee_by_skill",
                         lambda skill: f"emp-{skill}" if skill else None)
@@ -781,7 +1022,9 @@ def test_stage6_trigger_not_in_stage4_or_stage5(tmp_path, monkeypatch):
         engine.state["current_stage"] = stage_id
         engine._dispatch_producer()
         if dispatched:
-            assert "experiment-execution-runbook" not in dispatched[0][1]
+            desc = dispatched[0][1]
+            assert "experiment-execution-runbook" not in desc
+            assert "code-implementation-runbook" not in desc
 
 
 # ---------------------------------------------------------------------------
@@ -1495,15 +1738,238 @@ def test_stage4_desc_triggers_paper_framework_figure_after_methodology():
     assert "stage4_framework_figure.png" in src
 
 
-def test_stage8_desc_triggers_paper_framework_figure_before_paper_body():
-    """Stage 8 must render Figure 1 BEFORE writing the paper body so
-    the Introduction can reference it."""
+def test_stage8_desc_reuses_stage4_figure_does_not_regenerate():
+    """Stage 8 must REUSE stage4_framework_figure.png by reference, NOT
+    call paper-framework-figure to regenerate it (which would burn API
+    budget + produce a potentially inconsistent figure). The CCF-A
+    section list is still required."""
     from onemancompany.core import pipeline_engine
     import inspect
     src = inspect.getsource(pipeline_engine)
     # Stage 8 branch must exist
     assert 'stage["id"] == 8' in src
-    # And mention the figure skill
-    assert "stage8_framework_figure.png" in src
-    # CCF-A section list still required
-    assert "Abstract" in src and "Reproducibility" in src
+    # Must reference the existing PNG by path
+    assert "stage4_framework_figure.png" in src
+    # Must explicitly forbid regeneration. Grab the Stage 8 desc block.
+    after_marker = src.split('stage["id"] == 8', 1)[1]
+    # Stage 8 is the last elif; the generic `desc += (\n            f"\nYour task` line
+    # marks the end of stage-specific dispatching. Cut there.
+    stage8 = after_marker.split('f"\\nYour task', 1)[0]
+    assert ("Do NOT call" in stage8) or ("do NOT regenerate" in stage8.lower()), (
+        "Stage 8 desc must explicitly forbid figure regeneration"
+    )
+    assert "Abstract" in stage8 and "Reproducibility" in stage8
+
+
+# ---------------------------------------------------------------------------
+# STAGE_TALENT_DEFAULTS — canonical default employee per stage from hire_list
+# (PR #67, merged into the 6a/6b architecture)
+# ---------------------------------------------------------------------------
+
+def _talent_config(name: str, skills: list[str], talent_id: str = "") -> SimpleNamespace:
+    return SimpleNamespace(name=name, skills=skills, talent_id=talent_id)
+
+
+def test_stage_talent_defaults_maps_each_stage_to_hire_list_talent():
+    """Every pipeline stage (1..9) must have a canonical default talent
+    drawn from company/hire_list.json so the producer is deterministic
+    when multiple hired employees share the same skill."""
+    import json
+    from pathlib import Path
+
+    expected_stages = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+    assert set(pe.STAGE_TALENT_DEFAULTS.keys()) == expected_stages
+
+    hire_list_path = Path(pe.__file__).resolve().parents[3] / "company" / "hire_list.json"
+    talent_ids = {e["talent_id"] for e in json.loads(hire_list_path.read_text())}
+    for sid, tid in pe.STAGE_TALENT_DEFAULTS.items():
+        assert tid in talent_ids, f"Stage {sid} default '{tid}' not in hire_list.json"
+
+
+def test_find_employee_by_talent_id_returns_matching_employee(monkeypatch):
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "00010": _talent_config("Topic A", ["topic_refiner"], talent_id="other"),
+            "00011": _talent_config("Topic B", ["topic_refiner"], talent_id="topic-refiner"),
+        },
+    )
+    assert pe._find_employee_by_talent_id("topic-refiner") == "00011"
+    assert pe._find_employee_by_talent_id("missing") is None
+
+
+def test_find_employee_for_stage_prefers_canonical_talent(monkeypatch):
+    """Two employees both carry the stage's primary skill — the one hired
+    from the canonical hire_list talent_id wins."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-clone": _talent_config("Clone", ["topic_refiner"], talent_id=""),
+            "emp-canon": _talent_config("Canon", ["topic_refiner"], talent_id="topic-refiner"),
+        },
+    )
+    assert pe._find_employee_for_stage(1, "topic_refiner") == "emp-canon"
+
+
+def test_find_employee_for_stage_falls_back_to_skill_when_no_canonical(monkeypatch):
+    """No employee carries the canonical talent_id — fall back to the
+    existing skill-based lookup so the pipeline still runs."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-clone": _talent_config("Clone", ["topic_refiner"], talent_id=""),
+        },
+    )
+    assert pe._find_employee_for_stage(1, "topic_refiner") == "emp-clone"
+
+
+def test_find_employee_for_stage_6_code_implementer_preference_wins(monkeypatch):
+    """Stage 6's initial dispatch is Stage 6a — a ``code_implementer``
+    employee wins over both the canonical experimentalist talent AND any
+    experiment_runner on the roster (the runner is reserved for Stage 6b,
+    dispatched separately by ``on_task_complete``)."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-canon": _talent_config("Sim", ["experimentalist"], talent_id="experimentalist"),
+            "emp-runner": _talent_config("Runner", ["experiment_runner"], talent_id="experiment-runner"),
+            "emp-coder": _talent_config("Coder", ["code_implementer"], talent_id="experiment-code-writer"),
+        },
+    )
+    # Stage 6a — code_implementer wins
+    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-coder"
+    # Stage 6b — experiment_runner wins (canonical "experimentalist" is the
+    # last-resort fallback below it; runner skill is the primary preference)
+    assert pe._find_stage_6b_employee() == "emp-runner"
+
+
+def test_producer_b_stub_retries_via_dispatch_producer_b(tmp_path, monkeypatch):
+    """A stub return from Stage 6b (producer_b phase) must retry 6b
+    (not 6a). The stub gate branches on ``self.phase`` to pick the
+    right dispatcher."""
+    redispatched = []
+
+    def _capture_b(self, feedback=""):
+        redispatched.append(("b", feedback))
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-runner" if skill == "experiment_runner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", _capture_b)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+
+    engine.on_task_complete("emp", "n1", "Executed: bash")
+
+    assert redispatched and redispatched[0][0] == "b", (
+        f"Stub at producer_b must retry via _dispatch_producer_b, got {redispatched!r}"
+    )
+    assert "stub" in redispatched[0][1].lower()
+
+
+def test_producer_stub_exhausted_opens_ceo_gate(tmp_path, monkeypatch):
+    """When stub-result retries hit MAX_RETRIES, the stage holds at the
+    CEO gate (rather than looping forever or auto-passing)."""
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-meth")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "producer"
+    engine.state["retries"] = pe.MAX_RETRIES  # already exhausted
+
+    engine.on_task_complete("emp", "n1", "Executed: bash")
+
+    assert engine.state["phase"] == "gate", (
+        f"Stub at exhausted retries must hold for CEO; got phase={engine.state['phase']!r}"
+    )
+
+
+def test_stage6a_hard_gate_exhausted_opens_ceo_gate(tmp_path, monkeypatch):
+    """Hard-gate retries also cap at MAX_RETRIES — beyond that the stage
+    holds at the CEO gate. Otherwise an LLM that keeps skipping Phase 5
+    would loop indefinitely."""
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-coder" if skill == "code_implementer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer"
+    engine.state["retries"] = pe.MAX_RETRIES  # already exhausted
+    # NB: no receipt file → hard-gate would fire if retries allowed
+
+    # Non-stub result so we reach the hard-gate (not the stub gate)
+    engine.on_task_complete("emp-coder", "n1", "Real-but-incomplete output (no receipt, no commits)" * 10)
+
+    assert engine.state["phase"] == "gate", (
+        f"Hard-gate exhausted must hold for CEO; got phase={engine.state['phase']!r}"
+    )
+
+
+def test_stage3_uses_file_deliverable_when_present(tmp_path, monkeypatch):
+    """Stage 3's actual deliverable is the literature-conflict-graph file
+    on disk, not the agent's chat summary. When the file exists with the
+    expected header, ``on_task_complete`` swaps the chat result for the
+    file content so the critic sees the same thing the UI renders. (PR #67.)"""
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-critic")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    # Stage 3 deliverable file with the expected header
+    stage_skill = pe.STAGES[2]["skill"]  # stage 3 is index 2 (0-based)
+    (tmp_path / f"stage3_{stage_skill}.md").write_text(
+        "# Selected Hypotheses\n\nH1: ...\nH2: ...\n",
+        encoding="utf-8",
+    )
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 3
+    engine.state["phase"] = "producer"
+
+    engine.on_task_complete("emp", "n1", "quick summary from chat, not the full graph")
+
+    # The file content (with the header) — not the chat summary — was stored
+    stored = engine.state["stage_results"]["3"]
+    assert "# Selected Hypotheses" in stored
+    assert "H1:" in stored
+
+
+def test_find_stage_6b_falls_back_to_canonical_experimentalist(monkeypatch):
+    """When no experiment_runner is hired, Stage 6b falls back to the
+    canonical ``experimentalist`` talent_id before any random
+    experimentalist-skilled employee."""
+    monkeypatch.setattr(
+        pe,
+        "load_employee_configs",
+        lambda: {
+            "emp-clone": _talent_config("Clone", ["experimentalist"], talent_id=""),
+            "emp-canon": _talent_config("Canon", ["experimentalist"], talent_id="experimentalist"),
+        },
+    )
+    assert pe._find_stage_6b_employee() == "emp-canon"

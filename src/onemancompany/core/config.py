@@ -505,6 +505,25 @@ PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
         base_url="",  # user-provided via DEFAULT_API_BASE_URL
         env_key="custom_api_key",
     ),
+    # ``code_api`` and ``fig_api`` route DIRECTLY to openrouter.ai
+    # (bypassing the LiteLLM proxy override in ``agents/base.py`` that
+    # fires only for ``api_provider == "openrouter"``). They read the
+    # real openrouter.ai key from ``OPENROUTER_DIRECT_KEY`` —
+    # ``OPENROUTER_API_KEY`` in our deployment is the proxy's virtual
+    # key, capped to MiniMax + Kimi by the proxy allowlist; the real
+    # key has Claude + Gemini-flash-image access.
+    # - ``code_api``: Stage 6 code-writer employees that need Claude
+    # - ``fig_api`` : Stage 4 nano-banana figure rendering
+    "code_api": ProviderConfig(
+        base_url="https://openrouter.ai/api/v1",
+        env_key="openrouter_direct_key",
+        health_url="https://openrouter.ai/api/v1/auth/key",
+    ),
+    "fig_api": ProviderConfig(
+        base_url="https://openrouter.ai/api/v1",
+        env_key="openrouter_direct_key",
+        health_url="https://openrouter.ai/api/v1/auth/key",
+    ),
 }
 
 
@@ -543,6 +562,7 @@ class EmployeeConfig(BaseModel):
     hosting: str = "company"  # "company" | "omctalent" | "self" | "openclaw" — also serves as agent family selector
     auth_method: str = "api_key"  # "api_key" | "oauth" (OAuth PKCE for Anthropic)
     oauth_refresh_token: str = ""  # OAuth refresh token (long-lived)
+    talent_id: str = ""  # hire_list.json talent_id; preserved so the pipeline can route stages to canonical hires
 
     # Fields where empty string should be treated as missing (use field default)
     _NON_EMPTY_FIELDS: ClassVar[frozenset] = frozenset({"api_provider", "hosting", "auth_method"})
@@ -568,6 +588,12 @@ class Settings(BaseSettings):
     # --- LLM Provider API Keys (auto-discovered by PROVIDER_REGISTRY) ---
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # Real openrouter.ai key (vs ``openrouter_api_key`` which is the
+    # LiteLLM proxy virtual key in our deployment). Used by ``code_api``
+    # and ``fig_api`` providers — they hit openrouter.ai directly and
+    # need a key the proxy's allowlist does not cap. Source-of-truth:
+    # ``.onemancompany/.env`` → ``OPENROUTER_DIRECT_KEY``.
+    openrouter_direct_key: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     anthropic_oauth_token: str = ""  # OAuth access token (separate from API key to avoid overwriting)
