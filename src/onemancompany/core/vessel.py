@@ -1869,8 +1869,14 @@ class EmployeeManager:
                         employee_id, entry.node_id,
                         node.stall_retry_count, MAX_STALL_RETRIES,
                     )
-                    # Revert to PROCESSING and re-schedule with explicit nudge
-                    node.set_status(TaskPhase.PROCESSING)
+                    # Re-enter the lifecycle via PENDING. ``COMPLETED → PROCESSING``
+                    # is not in the state machine (VALID_TRANSITIONS only allows
+                    # ACCEPTED/FAILED/PENDING/HOLDING/CANCELLED from COMPLETED),
+                    # which used to raise TaskTransitionError and crash the whole
+                    # task mid-recovery. ``schedule_node`` below drives the
+                    # subsequent PENDING → PROCESSING transition through the
+                    # normal execute_task entry point.
+                    node.set_status(TaskPhase.PENDING)
                     nudge = (
                         "\n\n[SYSTEM] You said you would dispatch tasks but did NOT "
                         "actually call dispatch_child(). You MUST call the tool now. "
