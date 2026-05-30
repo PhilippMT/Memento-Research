@@ -1635,16 +1635,33 @@ async def update_workflow(name: str, body: dict):
 
 
 @router.get("/api/models")
-async def list_available_models(provider: str = "openrouter") -> dict:
-    """Fetch available models for a provider (default: openrouter)."""
-    return await _fetch_provider_models(provider)
+async def list_available_models(
+    provider: str = "openrouter",
+    employee_id: str = "",
+    api_key: str = "",
+) -> dict:
+    """Fetch available models for a provider (default: openrouter).
+
+    Key resolution order (first non-empty wins):
+      1. ``api_key`` query param — lets the LLM Settings panel preview a
+         provider's catalog with a key the user has typed but not yet
+         saved (the "Load" button).
+      2. Per-employee override (profile.yaml ``api_key``), when ``employee_id`` set
+      3. Global env key from ``settings`` (the historical behaviour)
+    """
+    return await _fetch_provider_models(provider, employee_id=employee_id, override_key=api_key)
 
 
-async def _fetch_provider_models(provider: str) -> dict:
+async def _fetch_provider_models(
+    provider: str,
+    *,
+    employee_id: str = "",
+    override_key: str = "",
+) -> dict:
     """Fetch available models for any registered provider."""
     import httpx
 
-    from onemancompany.core.config import get_provider, settings
+    from onemancompany.core.config import get_provider, settings, employee_configs
 
     prov_cfg = get_provider(provider)
     if not prov_cfg:
@@ -1660,8 +1677,16 @@ async def _fetch_provider_models(provider: str) -> dict:
     else:
         return {"models": [], "error": f"No models endpoint for '{provider}'"}
 
-    # Get API key
-    api_key = getattr(settings, prov_cfg.env_key, "") if prov_cfg.env_key else ""
+    # Get API key. Priority: explicit override (typed but unsaved) →
+    # per-employee profile.yaml key → global env key. This lets the
+    # LLM Settings panel preview a catalog before the user commits.
+    api_key = override_key or ""
+    if not api_key and employee_id:
+        cfg = employee_configs.get(employee_id)
+        if cfg and getattr(cfg, "api_key", ""):
+            api_key = cfg.api_key
+    if not api_key:
+        api_key = getattr(settings, prov_cfg.env_key, "") if prov_cfg.env_key else ""
     if not api_key:
         return {"models": [], "error": "No API key configured"}
 
@@ -2231,6 +2256,145 @@ async def update_employee_model(employee_id: str, body: dict) -> dict:
     )
 
     return {"status": "updated", "employee_id": employee_id, "model": model_id, "salary_per_1m_tokens": new_salary}
+
+
+# Set of fields ``PUT /llm`` accepts. Used to ignore unknown keys instead of
+# 400-ing — keeps the endpoint forward-compatible with adding e.g. base_url.
+_LLM_EDITABLE_FIELDS = {"model", "api_provider", "api_key", "temperature"}
+
+
+@router.put("/api/employee/{employee_id}/llm")
+async def update_employee_llm(employee_id: str, body: dict) -> dict:
+    """Atomic update of an employee's LLM config: any subset of
+    ``model``, ``api_provider``, ``api_key``, ``temperature``.
+
+    Replaces the prior split flow where ``llm_model`` + ``api_provider`` had
+    dedicated endpoints (``/model``, ``/auth/apply``) but ``temperature`` and
+    ``api_key`` had no UI-facing path. Persists to profile.yaml, refreshes
+    the in-memory ``EmployeeConfig``, and rebuilds the live LangChain agent
+    so the next dispatched task uses the new settings without a restart.
+    """
+    from onemancompany.core.config import employee_configs, settings as _cfg_settings
+
+    emp = _require_employee(employee_id)
+
+    # Pick out only the fields we know how to handle so callers can include
+    # extra metadata without us silently persisting it as profile state.
+    updates = {k: v for k, v in body.items() if k in _LLM_EDITABLE_FIELDS}
+    if not updates:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No editable fields in body. Supported: {sorted(_LLM_EDITABLE_FIELDS)}",
+        )
+
+    # Temperature is the only field with a hard range — wrong-range temps
+    # silently degrade LLM behaviour, so we reject them at the boundary.
+    if "temperature" in updates:
+        try:
+            updates["temperature"] = float(updates["temperature"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="temperature must be a number")
+        if not (0.0 <= updates["temperature"] <= 2.0):
+            raise HTTPException(status_code=400, detail="temperature must be in [0, 2]")
+
+    cfg = employee_configs.get(employee_id)
+
+    # Salary is derived from the model — only re-compute when the model
+    # changes AND the agent is on the default provider (custom/self-hosted
+    # providers don't map to model_costs, so we keep the existing salary).
+    persisted: dict = {}
+    if "model" in updates:
+        model_id = (updates["model"] or "").strip()
+        persisted["llm_model"] = model_id
+        hosting = cfg.hosting if cfg else emp.get("hosting", "company")
+        _default_prov = _cfg_settings.default_api_provider or "openrouter"
+        # If api_provider is also being changed in this same call, use the
+        # incoming value for the pricing decision; otherwise fall back to cfg.
+        effective_provider = updates.get("api_provider") or (
+            cfg.api_provider if cfg else _default_prov
+        )
+        if hosting != "self" and effective_provider == _default_prov:
+            from onemancompany.core.model_costs import compute_salary
+            new_salary = compute_salary(model_id)
+        else:
+            new_salary = cfg.salary_per_1m_tokens if cfg else 0.0
+        persisted["salary_per_1m_tokens"] = new_salary
+        if cfg:
+            cfg.llm_model = model_id
+            cfg.salary_per_1m_tokens = new_salary
+
+    if "api_provider" in updates:
+        provider = (updates["api_provider"] or "").strip()
+        persisted["api_provider"] = provider
+        if cfg:
+            cfg.api_provider = provider
+
+    if "api_key" in updates:
+        persisted["api_key"] = updates["api_key"]
+        if cfg:
+            cfg.api_key = updates["api_key"]
+
+    if "temperature" in updates:
+        persisted["temperature"] = updates["temperature"]
+        if cfg:
+            cfg.temperature = updates["temperature"]
+
+    await _store.save_employee(employee_id, persisted)
+    _rebuild_employee_agent(employee_id)
+
+    await event_bus.publish(
+        CompanyEvent(
+            type=EventType.AGENT_DONE,
+            payload={
+                "role": "CEO",
+                "summary": f"Updated {emp.get('name', '')} LLM settings: {list(persisted.keys())}",
+            },
+            agent="CEO",
+        )
+    )
+    return {"status": "updated", "employee_id": employee_id, "updated_fields": sorted(persisted.keys())}
+
+
+@router.get("/api/employee/{employee_id}/hire-defaults")
+async def get_employee_hire_defaults(employee_id: str) -> dict:
+    """Return the LLM defaults this employee was originally hired with —
+    the matching entry in ``company/hire_list.json``. Used by the settings
+    panel so the user can see "what would Reset land me on" before tweaking.
+
+    404 when the employee has no ``talent_id`` (manually hired) or no
+    matching entry is on the hire list.
+    """
+    import json
+
+    emp = _require_employee(employee_id)
+    talent_id = emp.get("talent_id", "")
+    if not talent_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Employee has no talent_id — was not hired from hire_list.json",
+        )
+
+    hire_file = DATA_ROOT / "company" / "hire_list.json"
+    if not hire_file.exists():
+        raise HTTPException(status_code=404, detail="hire_list.json not found")
+    try:
+        cvs = json.loads(hire_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to parse hire_list.json: {exc}")
+
+    for cv in cvs:
+        if cv.get("talent_id", "") == talent_id:
+            return {
+                "talent_id": talent_id,
+                "llm_model": cv.get("llm_model", ""),
+                "api_provider": cv.get("api_provider", ""),
+                "temperature": cv.get("temperature", 0.7),
+            }
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"No hire_list.json entry matches talent_id '{talent_id}'",
+    )
 
 
 @router.put("/api/employee/{employee_id}/hosting")
