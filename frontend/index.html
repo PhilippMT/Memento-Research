@@ -515,7 +515,16 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
             <input type="file" id="contextFiles" multiple style="display:none" onchange="document.getElementById('fileLabel').textContent=this.files.length+' file(s)'">
             <span class="config-select" id="fileLabel" style="min-width:80px;text-align:center" onclick="document.getElementById('contextFiles').click()">Upload</span>
           </label>
-          <button class="btn-launch" id="launchBtn" onclick="const t=document.getElementById('topicInput').value.trim();if(t&&window.launchPipeline){window.launchPipeline(t)}">Launch Pipeline</button>
+          <label class="config-group">
+            <span class="config-label">Output</span>
+            <select class="config-select" id="paperOutput" style="min-width:170px">
+              <option value="markdown" selected>Markdown</option>
+              <option value="latex:iclr2026">LaTeX — ICLR 2026</option>
+              <option value="latex:neurips2026">LaTeX — NeurIPS 2026</option>
+              <option value="docx">DOCX (Word)</option>
+            </select>
+          </label>
+          <button class="btn-launch" id="launchBtn" onclick="const t=document.getElementById('topicInput').value.trim();const o=document.getElementById('paperOutput').value;if(t&&window.launchPipeline){window.launchPipeline(t,o)}">Launch Pipeline</button>
         </div>
       </div>
     </div>
