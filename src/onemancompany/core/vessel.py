@@ -19,6 +19,7 @@ Design:
 from __future__ import annotations
 
 import asyncio
+import time as _time
 
 from onemancompany.core.async_utils import spawn_background
 import json
@@ -159,6 +160,45 @@ def _extract_breakpoint_stage(node) -> int | None:
         return None
     stage_num = int(m.group(1))
     return stage_num if stage_num in bp_set else None
+
+
+# ---------------------------------------------------------------------------
+# Timeout classification — distinguish "outer task budget exhausted" from
+# "inner LLM/tool TimeoutError bubbled up partway through". The retry
+# loop uses these so a transient LLM stream-chunk hang doesn't kill the
+# whole task with the misleading "task exceeded 3600s limit" message.
+# ---------------------------------------------------------------------------
+
+# 95 % of the task budget is "close enough to the deadline that wait_for
+# probably fired"; anything less is treated as an inner cause. Tighter
+# (e.g. 99 %) would leak inner timeouts past the retry; looser would
+# spin twice on a genuinely exhausted budget.
+_TASK_TIMEOUT_OUTER_THRESHOLD = 0.95
+
+
+def _is_inner_timeout(elapsed_seconds: float, task_timeout: float, threshold: float = _TASK_TIMEOUT_OUTER_THRESHOLD) -> bool:
+    """Return True iff a caught ``TimeoutError`` fired BEFORE the outer
+    task budget elapsed — i.e. came from an inner call (LLM stream chunk,
+    HTTP read, tool API timeout). Such timeouts are transient and should
+    be retried like any other transient error. A real task-level timeout
+    (elapsed >= task_timeout * threshold) is fatal."""
+    if task_timeout <= 0:
+        return False
+    return elapsed_seconds < task_timeout * threshold
+
+
+def _timeout_failure_message(elapsed_seconds: float, task_timeout: float, cause: BaseException) -> str:
+    """Render the user-facing failure string for a TimeoutError. Inner
+    timeouts surface the *actual* elapsed time and the original cause's
+    text; outer timeouts name the task budget that was actually exceeded.
+    Replaces the prior hardcoded ``f"... exceeded {3600}s limit"`` which
+    misreported every TimeoutError as a 1-hour overrun."""
+    if _is_inner_timeout(elapsed_seconds, task_timeout):
+        return (
+            f"Inner timeout after {elapsed_seconds:.0f}s "
+            f"(task budget {task_timeout:.0f}s, not exhausted): {cause!s}"
+        )
+    return f"Timeout: task exceeded {task_timeout:.0f}s limit"
 
 
 # ---------------------------------------------------------------------------
@@ -1624,6 +1664,11 @@ class EmployeeManager:
             launch_result: LaunchResult | None = None
             last_err: Exception | None = None
             for attempt in range(max_retries):
+                # Time the attempt so we can classify a TimeoutError that
+                # fires before the outer wait_for budget runs out (inner
+                # LLM/tool timeout) as a retryable transient error
+                # instead of misreporting it as a task-level timeout.
+                _attempt_start = _time.monotonic()
                 try:
                     launch_result = await asyncio.wait_for(
                         executor.execute(task_with_ctx, context, on_log=_on_log),
@@ -1635,8 +1680,24 @@ class EmployeeManager:
                     last_err = rec_err
                     self._log_node(employee_id, entry.node_id, "error", f"Agent hit recursion limit: {rec_err!s}")
                     break
-                except TimeoutError:
-                    raise  # Don't retry task-level timeout — LLM request_timeout handles per-call retries
+                except TimeoutError as t_err:
+                    _elapsed = _time.monotonic() - _attempt_start
+                    if not _is_inner_timeout(_elapsed, task_timeout):
+                        # Outer wait_for fired — real task-level timeout.
+                        raise
+                    # Inner LLM stream / tool / HTTP timeout — retryable.
+                    # Tag elapsed on the exception so the outer
+                    # ``except TimeoutError`` can render an accurate
+                    # failure message if all retries are exhausted.
+                    t_err._inner_elapsed = _elapsed  # type: ignore[attr-defined]
+                    last_err = t_err
+                    if attempt < max_retries - 1:
+                        delay = retry_delays[attempt] if attempt < len(retry_delays) else retry_delays[-1]
+                        self._log_node(
+                            employee_id, entry.node_id, "retry",
+                            f"Attempt {attempt + 1} hit inner timeout after {_elapsed:.0f}s: {t_err!s} — retrying in {delay}s",
+                        )
+                        await asyncio.sleep(delay)
                 except Exception as run_err:
                     last_err = run_err
                     if attempt < max_retries - 1:
@@ -1705,11 +1766,16 @@ class EmployeeManager:
             agent_error = True
             node.set_status(TaskPhase.FAILED)
             logger.debug("[TASK LIFECYCLE] employee={} node={} → FAILED (timeout)", employee_id, entry.node_id)
-            node.result = f"Timeout: task exceeded {node.timeout_seconds or 3600}s limit"
+            # Inner-timeout path tags ``_inner_elapsed`` on the exception
+            # so we render the real elapsed-time + cause instead of
+            # misclaiming the full task budget was exceeded.
+            _budget = node.timeout_seconds or 3600
+            _elapsed = float(getattr(te, "_inner_elapsed", _budget))
+            node.result = _timeout_failure_message(_elapsed, _budget, te)
             if not node.completed_at:
                 node.completed_at = datetime.now().isoformat()
-            self._log_node(employee_id, entry.node_id, "timeout", f"Task timed out after {node.timeout_seconds or 3600}s")
-            self._push_to_conversation(node, f"\u2717 Timeout ({node.timeout_seconds or 3600}s)")
+            self._log_node(employee_id, entry.node_id, "timeout", node.result)
+            self._push_to_conversation(node, f"\u2717 {node.result}")
             _append_progress(employee_id, f"Failed: {node.description_preview} \u2014 timeout")
         except Exception as e:
             agent_error = True
