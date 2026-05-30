@@ -552,6 +552,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Talent Market connection failed (configure in Settings): {}", e)
 
+    # Hire the founding roster from company/hire_list.json BEFORE the
+    # registration loop below runs — otherwise the new employees would be
+    # on disk but never registered as agents, and pipeline stages would
+    # silently fall back to "auto". Must run after talent_market is up
+    # (the hire flow calls talent_market.onboard) but before EMPLOYEES_DIR
+    # is iterated for skill sync + agent registration.
+    await _bootstrap_hire_list_employees()
+
     from onemancompany.core.vessel_config import load_vessel_config
     from onemancompany.core.config import EMPLOYEES_DIR as _EMPLOYEES_DIR, employee_configs as _emp_cfgs
 
@@ -707,15 +715,6 @@ async def lifespan(app: FastAPI):
         _app_ver = _pkg_version("onemancompany")
     except Exception:
         _app_ver = "dev"
-
-    # Hire the founding roster from company/hire_list.json BEFORE uvicorn
-    # binds the port. The previous architecture pushed this to start.sh
-    # via HTTP POSTs after the server was already serving, which (a) raced
-    # the frontend's first /api/bootstrap call and (b) was fragile — a
-    # mid-hire backend crash left a half-empty roster while the loop kept
-    # printing ✓ for queued CVs. Running inline here means the port doesn't
-    # open until the canonical talents are on disk.
-    await _bootstrap_hire_list_employees()
 
     print(f"🏢 One Man Company HQ v{_app_ver} is running!")
     print(f"   Frontend: http://localhost:{_settings.port}")

@@ -1786,6 +1786,31 @@ def test_stage_talent_defaults_maps_each_stage_to_hire_list_talent():
         assert tid in talent_ids, f"Stage {sid} default '{tid}' not in hire_list.json"
 
 
+def test_frontend_stages_talent_ids_match_backend_defaults():
+    """The frontend ``STAGES`` array in ``frontend/index.html`` declares a
+    ``talent`` string per stage that the picker uses to surface the
+    canonical agent name. It must stay aligned with backend
+    ``STAGE_TALENT_DEFAULTS`` — if either side is edited without the
+    other, the dropdown silently falls back to ``Auto`` for the drifted
+    stage. Lock the mapping by parsing the HTML."""
+    import re
+    from pathlib import Path
+
+    index_html = Path(pe.__file__).resolve().parents[3] / "frontend" / "index.html"
+    src = index_html.read_text(encoding="utf-8")
+    # Match e.g.  {id:4,name:'Methodology Design',talent:'methodology-designer',...}
+    pattern = re.compile(r"\{id:(\d+),[^}]*talent:'([^']+)'")
+    frontend = {int(sid): tid for sid, tid in pattern.findall(src)}
+
+    assert frontend == pe.STAGE_TALENT_DEFAULTS, (
+        "Frontend STAGES.talent ↔ backend STAGE_TALENT_DEFAULTS drifted.\n"
+        f"  frontend: {frontend}\n"
+        f"  backend:  {pe.STAGE_TALENT_DEFAULTS}\n"
+        "If you change one, change the other (and re-verify the picker "
+        "default labels)."
+    )
+
+
 def test_find_employee_by_talent_id_returns_matching_employee(monkeypatch):
     monkeypatch.setattr(
         pe,

@@ -121,3 +121,27 @@ def test_bootstrap_continues_when_one_hire_raises(hire_file, monkeypatch):
 
     # All three were attempted in order; the crash on #2 didn't abort #3.
     assert seen == ["topic-refiner", "methodology-designer", "idea-generator"]
+
+
+def test_lifespan_calls_bootstrap_before_agent_registration_loop():
+    """Source-level invariant: ``_bootstrap_hire_list_employees`` must run
+    BEFORE the agent registration loop (``for emp_id, emp_data in
+    _store_mod.load_all_employees()``). Otherwise new hires land on disk
+    but never become serving agents, and pipeline stages silently fall
+    back to ``auto`` — the original regression this PR fixed.
+
+    Locks the ordering into the test suite so a future lifespan reshuffle
+    doesn't silently re-break it."""
+    import inspect
+    from onemancompany import main as _main
+
+    src = inspect.getsource(_main.lifespan)
+    bootstrap_idx = src.find("await _bootstrap_hire_list_employees()")
+    reg_loop_idx = src.find("for emp_id, emp_data in _store_mod.load_all_employees()")
+    assert bootstrap_idx > 0, "bootstrap call missing from lifespan"
+    assert reg_loop_idx > 0, "agent-registration loop missing from lifespan"
+    assert bootstrap_idx < reg_loop_idx, (
+        "_bootstrap_hire_list_employees() must run BEFORE the agent "
+        "registration loop, otherwise newly-hired employees won't be "
+        "registered as serving agents and stages fall back to 'auto'"
+    )
