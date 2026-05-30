@@ -1973,3 +1973,197 @@ def test_find_stage_6b_falls_back_to_canonical_experimentalist(monkeypatch):
         },
     )
     assert pe._find_stage_6b_employee() == "emp-canon"
+
+
+# ---------------------------------------------------------------------------
+# Stage 8 paper-writer output-format branches
+# ---------------------------------------------------------------------------
+
+def _setup_stage8(tmp_path, monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: "emp-pw")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *a: dispatched.append(a))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *a, **k: None)
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 8
+    return engine, dispatched
+
+
+def test_stage8_dispatch_default_markdown(tmp_path, monkeypatch):
+    engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
+    engine._dispatch_producer()
+    desc = dispatched[0][1]
+    # Output-format directive line is "output_format=markdown" with no
+    # trailing " venue=…" appended — that branch only fires for latex/both.
+    assert "output_format=markdown\n" in desc
+    assert "stage4_framework_figure.png" in desc
+
+
+def test_stage8_dispatch_latex_uses_default_venue(tmp_path, monkeypatch):
+    engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
+    engine.state["paper_config"] = {"output_format": "latex"}
+    engine._dispatch_producer()
+    desc = dispatched[0][1]
+    assert "output_format=latex" in desc
+    assert "venue=iclr2026" in desc
+
+
+def test_stage8_dispatch_both_with_explicit_venue(tmp_path, monkeypatch):
+    engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
+    engine.state["paper_config"] = {"output_format": "both", "venue": "neurips2025"}
+    engine._dispatch_producer()
+    desc = dispatched[0][1]
+    assert "output_format=both" in desc
+    assert "venue=neurips2025" in desc
+
+
+def test_stage8_dispatch_docx_skips_venue(tmp_path, monkeypatch):
+    engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
+    engine.state["paper_config"] = {"output_format": "docx", "venue": "iclr2026"}
+    engine._dispatch_producer()
+    desc = dispatched[0][1]
+    # docx skips the venue branch — even if venue is set in paper_config,
+    # the rendered directive line must end without a " venue=…" suffix.
+    assert "output_format=docx\n" in desc
+
+
+# ---------------------------------------------------------------------------
+# _auto_approve_gate — unattended mode
+# ---------------------------------------------------------------------------
+
+def test_auto_approve_gate_advances_when_phase_is_gate(tmp_path, monkeypatch):
+    import asyncio
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["phase"] = "gate"
+    called = []
+    monkeypatch.setattr(engine, "on_ceo_approve", lambda txt: called.append(txt))
+    asyncio.run(engine._auto_approve_gate(stage_id=3, exhausted=False))
+    assert called == [""]
+
+
+def test_auto_approve_gate_no_op_when_phase_left_gate(tmp_path, monkeypatch):
+    import asyncio
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["phase"] = "producer"
+    called = []
+    monkeypatch.setattr(engine, "on_ceo_approve", lambda txt: called.append(txt))
+    asyncio.run(engine._auto_approve_gate(stage_id=3, exhausted=True))
+    assert called == []
+
+
+# ---------------------------------------------------------------------------
+# Memory-store exception paths in _retrieve_memory_guidance /
+# _record_stage_memory / _apply_ceo_memory_feedback. The pipeline must keep
+# running when the research-memory layer fails; it must NOT propagate.
+# ---------------------------------------------------------------------------
+
+class _BoomStore:
+    """Memory store stand-in that raises on every method."""
+    def retrieve_stage_guidance(self, **kw): raise RuntimeError("retrieve boom")
+    def record_stage_episode(self, **kw): raise RuntimeError("record boom")
+    def apply_ceo_feedback(self, **kw): raise RuntimeError("feedback boom")
+
+
+def test_retrieve_memory_guidance_swallows_store_errors(tmp_path, monkeypatch):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    monkeypatch.setattr(engine, "_memory_store", lambda: _BoomStore())
+    assert engine._retrieve_memory_guidance({"id": 1, "name": "x", "skill": "y"}, "ctx") == ""
+
+
+def test_record_stage_memory_swallows_store_errors(tmp_path, monkeypatch):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    monkeypatch.setattr(engine, "_memory_store", lambda: _BoomStore())
+    out = engine._record_stage_memory(
+        {"id": 1, "name": "x", "skill": "y"},
+        producer_result="p", critic_result="c",
+        passed=True, confidence=0.5, outcome="critic_pass",
+    )
+    assert out is None
+
+
+def test_apply_ceo_memory_feedback_swallows_store_errors(tmp_path, monkeypatch):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    # Seed an episode id so apply_ceo_memory_feedback reaches the try block.
+    engine.state["memory_episodes"] = {"1": "ep-1"}
+    monkeypatch.setattr(engine, "_memory_store", lambda: _BoomStore())
+    # Should not raise.
+    engine._apply_ceo_memory_feedback({"id": 1}, "feedback", approved=True)
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_producer_b — guard branches
+# ---------------------------------------------------------------------------
+
+def test_dispatch_producer_b_rejects_non_stage_6(tmp_path, monkeypatch):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5
+    # Should log error and return without changing phase.
+    engine._dispatch_producer_b()
+    assert engine.state["phase"] == "producer"  # untouched
+
+
+def test_dispatch_producer_b_marks_failed_when_no_runner(tmp_path, monkeypatch):
+    monkeypatch.setattr(pe, "_find_stage_6b_employee", lambda: None)
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine._dispatch_producer_b()
+    assert engine.state["phase"] == "failed"
+
+
+def test_find_employee_by_talent_id_returns_none_for_empty(monkeypatch):
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    assert pe._find_employee_by_talent_id("") is None
+
+
+def test_queue_pending_feedback_ignores_empty_text(tmp_path):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.queue_pending_feedback("")
+    engine.queue_pending_feedback("   \n  ")
+    assert engine.state.get("pending_user_feedback", "") == ""
+
+
+def test_queue_pending_feedback_appends_to_existing(tmp_path):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.queue_pending_feedback("first")
+    engine.queue_pending_feedback("second")
+    assert "first" in engine.state["pending_user_feedback"]
+    assert "second" in engine.state["pending_user_feedback"]
+
+
+def test_on_task_failed_unexpected_phase_is_ignored(tmp_path):
+    """on_task_failed in gate/done phases shouldn't change state — just
+    log and return. Covers the defensive guard added after a race report."""
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "gate"
+    before = dict(engine.state)
+    engine.on_task_failed("emp", "node", "boom")
+    # State must be unchanged.
+    assert engine.state["phase"] == before["phase"]
+    assert engine.state["retries"] == before["retries"]
+
+
+def test_dispatch_producer_b_injects_feedback_and_user_feedback(tmp_path, monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_stage_6b_employee", lambda: "emp-runner")
+    monkeypatch.setattr(pe, "load_employee_configs",
+                        lambda: {"emp-runner": _employee_config("Runner", ["experiment_runner"])})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *a: dispatched.append(a))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *a, **k: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["pending_user_feedback"] = "ceo direct guidance"
+    engine._dispatch_producer_b(feedback="critic notes")
+
+    assert dispatched, "Stage 6b must dispatch"
+    desc = dispatched[0][1]
+    assert "critic notes" in desc
+    assert "ceo direct guidance" in desc
+    # Pending user feedback is consumed.
+    assert engine.state.get("pending_user_feedback", "") == ""

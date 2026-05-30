@@ -335,3 +335,44 @@ def test_list_branches_returns_all(tmp_path):
     feat = next(b for b in branches if b["name"] == "feat-redo-1")
     assert feat["current"] is True
     assert "head_commit" in feat and len(feat["head_commit"]) >= 7
+
+
+def test_current_branch_returns_none_for_uninitialized_repo(tmp_path):
+    """Uninitialized worktrees have no HEAD — ``current_branch`` returns
+    None instead of raising so callers can branch on the absence."""
+    assert pr.current_branch(str(tmp_path)) is None
+
+
+def test_list_branches_returns_empty_for_uninitialized_repo(tmp_path):
+    assert pr.list_branches(str(tmp_path)) == []
+
+
+def test_validate_branch_name_rejects_empty_string(tmp_path):
+    pr.ensure_initialized(str(tmp_path), iteration="iter001")
+    # The flag-rejection path in checkout_branch_from_stage replaces
+    # empty with a generated default, but the validator itself
+    # explicitly rejects "" — callers that bypass the default handling
+    # rely on this guard.
+    with pytest.raises(pr.InvalidBranchNameError):
+        pr._validate_branch_name(str(tmp_path), "")
+
+
+def test_ensure_initialized_commits_baseline_for_truly_empty_workspace(tmp_path, monkeypatch):
+    """When ``git add -A`` stages nothing, the init routine forges a
+    placeholder commit via ``.gitkeep`` so the iteration tag has somewhere
+    to live. Hard to trigger naturally because ``ensure_initialized`` writes
+    ``.gitignore`` first, so we suppress that write to expose the branch."""
+    # Mock the gitignore exists() check so the writer skips it, leaving the
+    # workspace with nothing for `git add -A` to stage.
+    real_write = Path.write_text
+
+    def _skip_gitignore(self, *args, **kwargs):
+        if self.name == ".gitignore":
+            return None  # silently no-op for the default gitignore writer
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _skip_gitignore)
+    pr.ensure_initialized(str(tmp_path), iteration="iter_empty")
+    assert (tmp_path / ".gitkeep").exists()
+    tags = _git(tmp_path, "tag", "--list").splitlines()
+    assert "iter_empty/init" in tags
