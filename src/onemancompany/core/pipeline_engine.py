@@ -893,8 +893,14 @@ class PipelineEngine:
                                 f"uncommitted patches in upstream/ (git status shows:\n{dirty[:300]}\n"
                                 f"— run `cd upstream && git add -A && git commit -m 'Stage 6 adaptation'` before submit_result)"
                             )
-                    except Exception:
-                        pass  # don't block on git failures; receipt check is the primary gate
+                    except (subprocess.SubprocessError, OSError) as exc:
+                        # Don't block on git failures — the receipt check is the
+                        # primary gate; an uncheckable git tree at most under-reports
+                        # missing-commit, not over-reports.
+                        logger.debug(
+                            "[PIPELINE] Stage 6a hard-gate git status probe failed: {} — skipping uncommitted-patches check",
+                            exc,
+                        )
 
                 if missing:
                     feedback = (
