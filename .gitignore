@@ -296,3 +296,5 @@ tests/integration/__init__.py
 tests/fixtures/memento_e2e_corpus.yaml
 logs/
 autoresearch_skill_*.zip
+.env.bak
+experiments_archive/
