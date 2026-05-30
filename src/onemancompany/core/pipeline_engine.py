@@ -40,6 +40,22 @@ STAGES = [
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
 
+# Canonical default employee per stage, sourced from company/hire_list.json.
+# When multiple hired employees share the same skill, the one originating
+# from the canonical talent_id wins. Falls back to skill-based lookup if
+# the canonical talent is not on the roster.
+STAGE_TALENT_DEFAULTS = {
+    1: "topic-refiner",
+    2: "literature-surveyor",
+    3: "idea-generator",
+    4: "methodology-designer",
+    5: "experiment-designer",
+    6: "experimentalist",
+    7: "result-analyst",
+    8: "paper-writer",
+    9: "paper-reviewer",
+}
+
 # Iteration identifier used in git tag names (``<iteration>/stage-<N>``).
 # The literal directory name (e.g. ``iter_001``) is fine — git tag names
 # allow underscores. Centralised here so the engine and project_repo
@@ -89,19 +105,62 @@ def _find_employee_by_skill(skill: str) -> str | None:
     return None
 
 
+def _find_employee_by_talent_id(talent_id: str) -> str | None:
+    """Find the first employee whose ``talent_id`` matches.
+
+    ``talent_id`` is the hire_list.json identifier carried forward by
+    ``execute_hire`` so the pipeline can route each stage to the canonical
+    default talent rather than any arbitrary employee that happens to
+    share the same skill.
+    """
+    if not talent_id:
+        return None
+    configs = load_employee_configs()
+    for emp_id, cfg in configs.items():
+        if getattr(cfg, "talent_id", "") == talent_id:
+            return emp_id
+    return None
+
+
 def _find_employee_for_stage(stage_id: int, primary_skill: str) -> str | None:
     """Resolve the producer employee for a stage with stage-specific fallbacks.
 
-    Stage 6 (Auto Experiment) prefers an `experiment_runner` employee — they
-    carry the `experiment-infra` runbook and can actually drive remote infra.
-    If no runner is on the roster, fall back to `experimentalist` (the
-    default research talent), who can still produce a simulated report.
+    Resolution order:
+      1. Stage 6 only: a ``code_implementer`` employee (Stage 6a). The
+         two-step Stage 6 producer flow writes the experiment code (6a)
+         then executes it on remote infra (6b — see
+         :func:`_find_stage_6b_employee`). The initial producer dispatch
+         maps to 6a; 6b is dispatched by ``on_task_complete``.
+      2. The canonical hire_list talent for the stage
+         (see ``STAGE_TALENT_DEFAULTS``).
+      3. Any employee whose skills include ``primary_skill``.
     """
     if stage_id == 6:
-        runner = _find_employee_by_skill("experiment_runner")
-        if runner:
-            return runner
+        coder = _find_employee_by_skill("code_implementer")
+        if coder:
+            return coder
+        # Fall through to canonical/skill lookup so single-employee fixtures
+        # still find SOMETHING when no dedicated code_implementer is hired.
+    canonical = _find_employee_by_talent_id(STAGE_TALENT_DEFAULTS.get(stage_id, ""))
+    if canonical:
+        return canonical
     return _find_employee_by_skill(primary_skill)
+
+
+def _find_stage_6b_employee() -> str | None:
+    """Resolve the Stage 6b runner employee.
+
+    Order: ``experiment_runner`` skill (real remote-infra runner) →
+    canonical ``experimentalist`` talent_id (PR #67's hire_list mapping) →
+    any ``experimentalist`` skill (last-resort simulated-report fallback).
+    """
+    runner = _find_employee_by_skill("experiment_runner")
+    if runner:
+        return runner
+    canonical = _find_employee_by_talent_id(STAGE_TALENT_DEFAULTS.get(6, "experimentalist"))
+    if canonical:
+        return canonical
+    return _find_employee_by_skill("experimentalist")
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +213,7 @@ class PipelineEngine:
             "end_stage": 9,
             "prior_context": "",
             "stage_assignments": {},  # stage_id (str) → employee_id override
-            "phase": "producer",  # producer | critic | gate | done | failed
+            "phase": "producer",  # producer | producer_b | critic | gate | done | failed
             "retries": 0,
             "stage_results": {},
             "critic_result": None,
@@ -517,22 +576,27 @@ class PipelineEngine:
                 "coordination assignments table for Stage 6 execution. Do not write the "
                 "experiment plan directly without convening the debate first.\n"
             )
-        # Stage 6 (Auto Experiment) dispatches the Stage 5 assignments table
-        # row by row. Remote-execution rows go through the experiment-infra
-        # runbook (real HTTP submit to the lab infra); other rows are
-        # deferred to their named assignees.
+        # Stage 6a (Code Implementation) is the FIRST of Stage 6's two
+        # sequential producers. It clones the upstream codebase named in
+        # stage5_codebase_pin.md, applies the patches the pin lists, and
+        # produces stage6_implementation_receipt.md naming the runnable
+        # entrypoint. Stage 6b (the experiment_runner) reads that receipt
+        # and submits the actual runs — see _dispatch_producer_b().
         elif stage["id"] == 6:
             desc += (
                 "\n## REQUIRED FIRST STEP\n"
-                'Before doing anything else, call load_skill("experiment-execution-runbook") '
-                "and follow it. The runbook tells you how to read "
-                "stage5_assignments.md and route each row by its `skill` "
-                "column. For rows tagged `experiment_runner`, you also have "
-                'load_skill("experiment-infra") available — that gives you the '
-                "fast_*.sh scripts to submit real runs to the remote infra, "
-                "poll status, and capture log_tail + metrics. Do not "
-                "fabricate or simulate results — if a remote submit is "
-                "required but credentials are missing, report the failure.\n"
+                'Before doing anything else, call load_skill("code-implementation-runbook") '
+                "and follow it. This is Stage 6a (Implementation). The runbook's "
+                "Phase 0 walks you through reading stage5_codebase_pin.md, cloning "
+                "the upstream repo at the pinned commit, running the upstream test "
+                "suite on a clean checkout, applying only the patches the pin's "
+                "Adaptation surface table lists, and re-running the tests. Phase 5 "
+                "produces stage6_implementation_receipt.md naming the runnable "
+                "entrypoint command. ADAPT, do not REWRITE — the upstream pin "
+                "exists precisely to avoid from-scratch code. The exception path "
+                "(NO USABLE UPSTREAM FOUND in the pin) is allowed but triggers "
+                "extra critic scrutiny. The Stage 6b runner depends on your "
+                "receipt; do not skip it.\n"
             )
         # Stage 7 (Result Analysis) reads the Stage 4 methodology, the
         # Stage 5 experiment plan + assignments, and the Stage 6
@@ -556,21 +620,27 @@ class PipelineEngine:
         # framework figure (Figure 1) is non-negotiable for CCF-A venues.
         elif stage["id"] == 8:
             desc += (
-                "\n## REQUIRED FIRST STEP\n"
-                'Before writing the paper body, call load_skill("paper-framework-figure") '
-                "and render Figure 1 — the headline framework diagram. It walks you "
-                "through synthesising the 4-section work summary "
-                "(背景 / 问题和难点 / 创新点 / 具体的技术路线) from the prior stages "
-                "(1-7), calling nano banana via OpenRouter with the correct "
-                "'Generate ONE image' wrapper, saving the PNG as "
-                "stage8_framework_figure.png, and writing a numbered Figure caption "
-                "that names every component shown. Render the figure BEFORE the "
-                "paper body so you can reference it in the Introduction.\n"
-                "\nAfter Figure 1 is in place, write stage8_paper_writer.md with the "
-                "standard CCF-A sections (Abstract, Introduction, Related Work, "
-                "Methodology, Experimental Setup, Results, Discussion, Limitations, "
-                "Conclusion, Reproducibility, References). Preserve all LaTeX "
-                "notation ($...$, $$...$$) from Stage 4 verbatim.\n"
+                "\n## REQUIRED FIRST STEP — REUSE THE STAGE 4 FRAMEWORK FIGURE\n"
+                "Stage 4 already rendered the framework figure as "
+                "`stage4_framework_figure.png` in this same iteration directory. "
+                "Do NOT call `paper-framework-figure` again — do NOT regenerate via "
+                "nano banana — it would burn API budget and produce a different "
+                "(potentially inconsistent) figure. Instead, embed the existing "
+                "PNG as the paper's Figure 1 by including a line of the form\n"
+                "\n    ![Figure 1. <one-paragraph caption naming every box/arrow shown>]"
+                "(stage4_framework_figure.png)\n"
+                "\nin the Methodology section (or the Introduction, whichever you "
+                "reference first). The caption must NAME every component the figure "
+                "actually shows (Stage 1: Prompt-Format Control, Stage 2: Gated Routing, "
+                "Stage 3: Adaptive Budgeting, Stage 4: Evaluation & Gatekeeping, "
+                "plus the Unified Evaluation row and the Shared Controls row) — no "
+                "'see above', no vague pronouns. The Stage 8 critic checks D-FIG "
+                "(Figure 1 embedded + named) as a hard gate.\n"
+                "\nWrite stage8_paper_writer.md with the standard CCF-A sections "
+                "(Abstract, Introduction, Related Work, Methodology, Experimental "
+                "Setup, Results, Discussion, Limitations, Conclusion, "
+                "Reproducibility, References). Preserve all LaTeX notation "
+                "($...$, $$...$$) from Stage 4 verbatim.\n"
             )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
@@ -583,6 +653,61 @@ class PipelineEngine:
         self._save()
         self._dispatch_to_employee(employee_id, desc, f"Stage {stage['id']}: {stage['name']}")
         # Resolve employee name for frontend display
+        emp_name = employee_id
+        configs = load_employee_configs()
+        if employee_id in configs:
+            emp_name = configs[employee_id].name
+        self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
+
+    def _dispatch_producer_b(self, feedback: str = ""):
+        """Dispatch Stage 6b — the experiment runner. Runs after Stage 6a
+        (code_implementer) produces stage6_implementation_receipt.md.
+        Only called for stage 6; mirrors _dispatch_producer but targets
+        the runner skill and uses the experiment-execution-runbook.
+        """
+        stage = self._stage_def()
+        if stage["id"] != 6:
+            logger.error("[PIPELINE] _dispatch_producer_b called for non-Stage-6 stage {}", stage["id"])
+            return
+        employee_id = _find_stage_6b_employee()
+        if not employee_id:
+            logger.error("[PIPELINE] No experiment_runner employee for Stage 6b")
+            self.state["phase"] = "failed"
+            self._save()
+            return
+
+        context = self._build_context()
+        desc = (
+            f"Stage 6b: Auto Experiment Execution\n\n"
+            f"Stage 6a (code implementer) has produced stage6_implementation_receipt.md "
+            f"in the project workspace naming the runnable entrypoint. Your job is to "
+            f"submit the run(s) to remote infra and capture evidence.\n\n"
+            f"{context}\n"
+        )
+        if feedback:
+            desc += f"\nFeedback from previous review:\n{feedback}\n"
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += f"\nDirect guidance from CEO (received during the previous attempt):\n{user_feedback}\n"
+        desc += (
+            "\n## REQUIRED FIRST STEP\n"
+            'Before doing anything else, call load_skill("experiment-execution-runbook") '
+            "and follow it. The runbook tells you how to read "
+            "stage6_implementation_receipt.md (Stage 6a's output) and "
+            "stage5_assignments.md, then submit smoke-then-full runs via "
+            'load_skill("experiment-infra") for each `experiment_runner` row. '
+            "Non-runner rows are noted as deferred. Do not fabricate or "
+            "simulate results — if a remote submit is required but "
+            "credentials are missing, report the failure.\n"
+        )
+        desc += (
+            f"\nYour task: write stage6_experimentalist.md (the evidence "
+            f"report) and call submit_result() with a summary referencing it."
+        )
+
+        self.state["phase"] = "producer_b"
+        self._save()
+        self._dispatch_to_employee(employee_id, desc, f"Stage 6b: Auto Experiment Execution")
         emp_name = employee_id
         configs = load_employee_configs()
         if employee_id in configs:
@@ -699,24 +824,177 @@ class PipelineEngine:
                 "(HARKing); (b) any confirmatory claim without a real "
                 "Stage 6 run_id (fabrication); (c) non-English document.\n\n"
             )
-        desc += f"--- Producer Output ---\n{producer_result}\n"
+        # Cap producer output sent to critic (#62): full cumulative context
+        # has been observed to blow Kimi-K2.6's 262K-token window (993K input
+        # in late-stage runs), causing ContextWindowExceededError and the
+        # critic to silently auto-pass on its stored stub. We keep the head
+        # (where summaries / decisions usually live) plus the tail (where
+        # spec-tables / receipts live), with an explicit elision marker so
+        # the critic knows we trimmed.
+        producer_excerpt = self._cap_for_critic(producer_result, stage_id=stage["id"])
+        desc += f"--- Producer Output ---\n{producer_excerpt}\n"
 
         self.state["phase"] = "critic"
         self._save()
         self._dispatch_to_employee(critic_id, desc, f"Gate Review: Stage {stage['id']}")
 
+    # Soft cap on bytes sent to the critic as ``producer_output``. 80 KB
+    # ≈ 20K tokens, comfortably under the smaller-window critic models
+    # (Kimi-K2.6: 262K, MiniMax-M2.7: 128K-ish, Claude-Sonnet: 200K) while
+    # leaving headroom for the system prompt + critic runbook + tool spec
+    # which together routinely cost another 20-40 KB.
+    _CRITIC_BUDGET_BYTES = 80_000
+    _CRITIC_HEAD_BYTES = 50_000
+    _CRITIC_TAIL_BYTES = 25_000
+
+    @classmethod
+    def _cap_for_critic(cls, producer_result: str, stage_id: int) -> str:
+        """Trim ``producer_result`` to fit the critic's context budget.
+
+        Strategy: keep head (decisions, summaries) + tail (tables, receipts);
+        elide the middle with an explicit marker naming how many bytes were
+        dropped. Stage 6's runner-report and Stage 8's paper are the typical
+        offenders past the budget."""
+        if not producer_result or len(producer_result) <= cls._CRITIC_BUDGET_BYTES:
+            return producer_result
+        head = producer_result[: cls._CRITIC_HEAD_BYTES]
+        tail = producer_result[-cls._CRITIC_TAIL_BYTES :]
+        elided = len(producer_result) - cls._CRITIC_HEAD_BYTES - cls._CRITIC_TAIL_BYTES
+        logger.info(
+            "[PIPELINE] Stage {} producer output trimmed for critic: {} bytes → head {} + tail {} + elided {} bytes",
+            stage_id, len(producer_result), cls._CRITIC_HEAD_BYTES, cls._CRITIC_TAIL_BYTES, elided,
+        )
+        return (
+            head
+            + f"\n\n--- [ {elided:,} bytes elided from middle for critic context budget; "
+            f"head {cls._CRITIC_HEAD_BYTES:,}B + tail {cls._CRITIC_TAIL_BYTES:,}B retained ] ---\n\n"
+            + tail
+        )
+
     def on_task_complete(self, employee_id: str, node_id: str, result: str):
         """Called by vessel when a pipeline-managed task completes."""
-        if self.phase == "producer":
-            # Producer finished → store result, dispatch critic
+        if self.phase in ("producer", "producer_b"):
             stage = self._stage_def()
+            # Stub-result gate (#60 fix 2): if the producer returned a
+            # placeholder like ``"Executed: bash"`` (the agent runtime's
+            # fallback when the LLM produced no text content), treat it
+            # as producer failure and retry with explicit feedback — do
+            # NOT store as the stage deliverable, where the critic would
+            # see only tool names and (under the old default-PASS parser)
+            # silently advance. Closes #60 fix #2 / #63 fix #4.
+            if self._is_stub_result(result):
+                feedback = (
+                    f"Your submit_result was a stub: {result.strip()[:200]!r}. "
+                    "This happens when the agent runtime falls back to summarising tool names "
+                    "because your final response had no text content. You must produce a "
+                    "non-trivial deliverable (write the actual file, then submit_result with a "
+                    "summary referencing it). Re-run the full task; do not stop at tool calls."
+                )
+                retries = self.state.get("retries", 0)
+                if retries < MAX_RETRIES:
+                    self.state["retries"] = retries + 1
+                    self._save()
+                    logger.warning(
+                        "[PIPELINE] Stage {} {} produced a stub ({} chars) — retry {}/{}",
+                        stage["id"], self.phase, len(result or ""), retries + 1, MAX_RETRIES,
+                    )
+                    self._emit_stage_event("stage_failed", stage["id"])
+                    if self.phase == "producer_b":
+                        self._dispatch_producer_b(feedback=feedback)
+                    else:
+                        self._dispatch_producer(feedback=feedback)
+                    return
+                logger.warning(
+                    "[PIPELINE] Stage {} {} stub-result exhausted retries — holding for CEO",
+                    stage["id"], self.phase,
+                )
+                self.state["phase"] = "gate"
+                self._save()
+                self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+                return
+
+        if self.phase == "producer":
+            stage = self._stage_def()
+            # Stage 6 has a 2-step producer: 6a (code_implementer) then 6b
+            # (experiment_runner). The first dispatch maps to 6a; on
+            # completion we hand off to 6b instead of going straight to
+            # the critic. 6a's submit_result is informational only — the
+            # canonical stage 6 deliverable is 6b's runner report.
+            if stage["id"] == 6:
+                # Hard-gate: 6a must have produced stage6_implementation_receipt.md
+                # naming the runnable entrypoint, and the upstream/ patches must
+                # be committed (so the runner can push a clean diff). The runbook
+                # says these are mandatory, but LLMs frequently skip them after
+                # writing the patch files — burning a 6a → 6b → critic cycle
+                # that always ends BLOCKED. Catch it here.
+                receipt_path = Path(self.project_dir) / "stage6_implementation_receipt.md"
+                upstream_dir = Path(self.project_dir) / "upstream"
+                missing = []
+                if not receipt_path.exists() or receipt_path.stat().st_size < 200:
+                    missing.append("stage6_implementation_receipt.md (must exist and be non-trivial)")
+                if upstream_dir.exists() and (upstream_dir / ".git").exists():
+                    # Check for uncommitted changes — patches should be in a commit.
+                    import subprocess
+                    try:
+                        dirty = subprocess.run(
+                            ["git", "status", "--short"],
+                            cwd=str(upstream_dir), capture_output=True, text=True, timeout=10,
+                        ).stdout.strip()
+                        if dirty:
+                            missing.append(
+                                f"uncommitted patches in upstream/ (git status shows:\n{dirty[:300]}\n"
+                                f"— run `cd upstream && git add -A && git commit -m 'Stage 6 adaptation'` before submit_result)"
+                            )
+                    except (subprocess.SubprocessError, OSError) as exc:
+                        # Don't block on git failures — the receipt check is the
+                        # primary gate; an uncheckable git tree at most under-reports
+                        # missing-commit, not over-reports.
+                        logger.debug(
+                            "[PIPELINE] Stage 6a hard-gate git status probe failed: {} — skipping uncommitted-patches check",
+                            exc,
+                        )
+
+                if missing:
+                    feedback = (
+                        "Stage 6a hard-gate FAILED. You wrote code but did not finalize Phase 5+6:\n\n"
+                        + "\n".join(f"  - {m}" for m in missing)
+                        + "\n\nGo back and complete: (1) commit the upstream/ patches as ONE commit, "
+                        "(2) push them to remote via fast_push_code.sh (Phase 4), "
+                        "(3) write stage6_implementation_receipt.md (Phase 5 template — at minimum: "
+                        "pin status header, file list with line counts, runnable entrypoint command), "
+                        "(4) call submit_result. Read the receipt back from disk to verify before submit. "
+                        "Patches without a receipt are invisible to the 6b runner — your work is lost."
+                    )
+                    retries = self.state.get("retries", 0)
+                    if retries < MAX_RETRIES:
+                        self.state["retries"] = retries + 1
+                        self._save()
+                        logger.warning(
+                            "[PIPELINE] Stage 6a hard-gate FAILED ({} missing) — retry {}/{}",
+                            len(missing), retries + 1, MAX_RETRIES,
+                        )
+                        self._emit_stage_event("stage_failed", stage["id"])
+                        self._dispatch_producer(feedback=feedback)
+                        return
+                    # Exhausted: still surface as a producer fail, hold for CEO.
+                    logger.warning("[PIPELINE] Stage 6a hard-gate exhausted after {} retries", MAX_RETRIES)
+                    self.state["phase"] = "gate"
+                    self._save()
+                    self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+                    return
+
+                self.state["stage_6a_result"] = result
+                self._save()
+                logger.info("[PIPELINE] Stage 6a (code impl) complete, dispatching Stage 6b (runner)")
+                self._dispatch_producer_b()
+                return
+
             # Stage 3 (literature-conflict-graph) deliverable is the FILE the
-            # aigraph tool writes (`# Selected Hypotheses` report). The agent's
+            # aigraph tool writes (``# Selected Hypotheses`` report). The agent's
             # chat result is often just a summary, which the UI can't render as
             # a conflict graph — so prefer the file content as the stage result
             # (the critic reads the file too, keeping them consistent).
             if stage["id"] == 3:
-                from pathlib import Path
                 deliverable = Path(self.project_dir) / f"stage3_{stage['skill']}.md"
                 try:
                     if deliverable.exists():
@@ -725,9 +1003,21 @@ class PipelineEngine:
                             result = file_text
                 except Exception as e:
                     logger.debug("[PIPELINE] Stage 3 file-content fallback failed: {}", e)
+
+            # Producer finished → store result, dispatch critic
             self.state["stage_results"][str(stage["id"])] = result
             self._save()
             logger.info("[PIPELINE] Stage {} producer complete, dispatching critic", stage["id"])
+            self._emit_stage_event("stage_reviewing", stage["id"])
+            self._dispatch_critic(result)
+
+        elif self.phase == "producer_b":
+            # Stage 6b runner finished → store as canonical Stage 6 result,
+            # dispatch critic.
+            stage = self._stage_def()
+            self.state["stage_results"][str(stage["id"])] = result
+            self._save()
+            logger.info("[PIPELINE] Stage 6b (runner) complete, dispatching critic")
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
 
@@ -818,7 +1108,7 @@ class PipelineEngine:
             self._on_critic_pass(stored, confidence=None)
             return
 
-        if current_phase != "producer":
+        if current_phase not in ("producer", "producer_b"):
             # Should not happen — gate/done/failed phases mean no task is in flight.
             logger.warning(
                 "[PIPELINE] on_task_failed called in unexpected phase {} (stage {}); ignoring",
@@ -827,21 +1117,33 @@ class PipelineEngine:
             return
 
         truncated = (result or "(no output)").strip()[:600]
-        failure_feedback = (
-            f"Producer for Stage {stage['id']} ({stage['name']}) failed without producing a deliverable. "
-            f"Failure context:\n{truncated}"
-        )
+        # Differentiate 6a vs 6b failures so the retry feedback names the
+        # right sub-phase. A 6b failure (runner) does not retry 6a — the
+        # code is already on disk; only the runner pass is re-tried.
+        if current_phase == "producer_b":
+            failure_feedback = (
+                f"Stage 6b runner failed without producing a deliverable. "
+                f"Failure context:\n{truncated}"
+            )
+        else:
+            failure_feedback = (
+                f"Producer for Stage {stage['id']} ({stage['name']}) failed without producing a deliverable. "
+                f"Failure context:\n{truncated}"
+            )
         retries = self.state.get("retries", 0)
         if retries < MAX_RETRIES:
             self.state["retries"] = retries + 1
-            self.state["phase"] = "producer"
+            self.state["phase"] = current_phase
             self._save()
             logger.warning(
-                "[PIPELINE] Stage {} producer FAILED (retry {}/{}) — re-dispatching",
-                stage["id"], retries + 1, MAX_RETRIES,
+                "[PIPELINE] Stage {} {} FAILED (retry {}/{}) — re-dispatching",
+                stage["id"], current_phase, retries + 1, MAX_RETRIES,
             )
             self._emit_stage_event("stage_failed", stage["id"])
-            self._dispatch_producer(feedback=failure_feedback)
+            if current_phase == "producer_b":
+                self._dispatch_producer_b(feedback=failure_feedback)
+            else:
+                self._dispatch_producer(feedback=failure_feedback)
         else:
             logger.error(
                 "[PIPELINE] Stage {} exhausted retries after producer failure — holding for CEO",
@@ -992,7 +1294,7 @@ class PipelineEngine:
         # workspace; ``discard_uncommitted_changes`` below scrubs that so
         # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
         # passes.
-        was_mid_flight = self.phase in ("producer", "critic")
+        was_mid_flight = self.phase in ("producer", "producer_b", "critic")
         if was_mid_flight:
             await self._cancel_active_task_and_wait()
 
@@ -1102,14 +1404,80 @@ class PipelineEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_critic_pass(result: str) -> bool:
-        upper = result.upper()
+    def _is_stub_result(result: str) -> bool:
+        """A producer/critic ``result`` is a stub when the agent runtime fell
+        back to synthesising a summary from tool names (no real text content).
+        These show up as ``"Executed: bash"`` / ``"Executed tools: write, read"``
+        — see ``agents/base.py:_synthesize_fallback``. Stubs that pass to the
+        critic look like work but contain no analysis, and the critic's own
+        stub return then defaults to PASS by the old parse logic — closing
+        the silent-empty-stage loop #60 / #63 describe.
+
+        Threshold (~300 chars) is empirical: real CCF-A producer outputs are
+        kilobytes; stubs are typically 14-200 chars."""
+        if not result:
+            return True
+        stripped = result.strip()
+        if len(stripped) < 300 and (
+            stripped.startswith("Executed: ")
+            or stripped.startswith("Executed tools: ")
+        ):
+            return True
+        return False
+
+    def _parse_critic_pass(self, result: str) -> bool:
+        """Parse the critic's PASS/REJECT verdict.
+
+        Robustness improvements (#60 fix 4 / #63 fix 4):
+        - If the critic's ``submit_result`` was a stub (e.g. ``"Executed: bash"``
+          from a context-window-truncated review), fall back to reading the
+          on-disk ``stage{N}_gate_review.md`` the critic was told to write.
+        - Support table-format verdicts (``| Decision | PASS |``) as well as
+          the conversational ``"Decision: PASS"`` form.
+        - Default to REJECT on ambiguity (no PASS, no REJECT signal). The old
+          default-to-PASS branch was the auto-approve-empty-stage loophole.
+        """
+        text = result or ""
+        # Stub → reach for the gate-review file on disk.
+        if self._is_stub_result(text):
+            stage_id = self.current_stage
+            gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
+            if gate_review.exists():
+                try:
+                    text = gate_review.read_text(encoding="utf-8")
+                    logger.info(
+                        "[PIPELINE] Critic submit_result was a stub — falling back to {} ({} bytes)",
+                        gate_review.name, len(text),
+                    )
+                except OSError as exc:
+                    logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
+                    text = result  # restore original
+            else:
+                logger.warning(
+                    "[PIPELINE] Critic submit_result is a stub and no {} file found on disk — defaulting to REJECT",
+                    gate_review.name,
+                )
+
+        upper = text.upper()
+        # Explicit table-format ``| Decision | PASS |`` and ``| **Decision** | **PASS** |``
+        # — strip markdown emphasis before checking.
+        compact = re.sub(r"[\s|*_]+", " ", upper)
+        if " DECISION PASS " in compact:
+            return True
+        if " DECISION REJECT " in compact:
+            return False
+        # Conversational form: prefer the FIRST explicit signal.
         if "REJECT" in upper:
             return False
         if "PASS" in upper:
             return True
-        # Default to pass if ambiguous
-        return True
+        # Ambiguous → safer default is REJECT (auto-pass on empty stages was
+        # the #63 / #60 root cause).
+        logger.warning(
+            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT signal, len={}) — defaulting to REJECT",
+            len(text),
+        )
+        return False
 
     @staticmethod
     def _parse_confidence(result: str) -> float | None:

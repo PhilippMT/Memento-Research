@@ -803,7 +803,10 @@ class TestPaperFrameworkFigureSkill:
         ob_mod._inject_default_skills(skills_dir, employee_id="00400")
         assert (skills_dir / "paper-framework-figure" / "SKILL.md").exists()
 
-    def test_paper_writer_gets_figure_skill(self, tmp_path, monkeypatch):
+    def test_paper_writer_no_figure_skill_injection(self, tmp_path, monkeypatch):
+        """Stage 8 (paper_writer) does NOT need paper-framework-figure
+        injected anymore — it reuses stage4_framework_figure.png by path.
+        Injecting would burn API budget regenerating a duplicate figure."""
         ob_mod = self._setup(tmp_path, monkeypatch)
         emp_dir = tmp_path / "00401"
         skills_dir = emp_dir / "skills"
@@ -812,7 +815,7 @@ class TestPaperFrameworkFigureSkill:
             "skills:\n- paper_writer\nname: PaperWriter\n"
         )
         ob_mod._inject_default_skills(skills_dir, employee_id="00401")
-        assert (skills_dir / "paper-framework-figure" / "SKILL.md").exists()
+        assert not (skills_dir / "paper-framework-figure").exists()
 
     def test_other_employees_do_not_get_figure_skill(self, tmp_path, monkeypatch):
         ob_mod = self._setup(tmp_path, monkeypatch)
@@ -823,10 +826,12 @@ class TestPaperFrameworkFigureSkill:
         ob_mod._inject_default_skills(skills_dir, employee_id="00402")
         assert not (skills_dir / "paper-framework-figure").exists()
 
-    def test_mapping_includes_methodology_and_paper(self):
+    def test_mapping_includes_methodology_only(self):
+        """methodology_designer renders the figure; paper_writer only reuses it.
+        Map must list the former and NOT the latter."""
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
         assert "paper-framework-figure" in _SKILL_REQUIRED_RUNBOOKS.get("methodology_designer", [])
-        assert "paper-framework-figure" in _SKILL_REQUIRED_RUNBOOKS.get("paper_writer", [])
+        assert "paper-framework-figure" not in _SKILL_REQUIRED_RUNBOOKS.get("paper_writer", [])
 
 
 class TestPaperFrameworkFigureSkillFile:

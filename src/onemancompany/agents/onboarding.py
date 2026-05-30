@@ -96,11 +96,13 @@ _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
         "experiment-quality-critic",
         "result-quality-critic",
     ],
-    # Both Stage 4 (methodology) and Stage 8 (paper) sometimes need to
-    # render a CCF-A-grade framework figure via nano banana. Inject the
-    # `paper-framework-figure` skill so `load_skill(...)` resolves it.
+    # Stage 4 (methodology) renders the headline framework figure via
+    # nano banana. Stage 8 (paper) REUSES the Stage 4 PNG — it does not
+    # regenerate (per the Stage 8 dispatch desc in pipeline_engine.py
+    # which hard-pins "Do NOT call paper-framework-figure again").
+    # So only methodology_designer needs the runbook injected;
+    # paper_writer just references stage4_framework_figure.png by path.
     "methodology_designer": ["paper-framework-figure"],
-    "paper_writer": ["paper-framework-figure"],
 }
 
 
@@ -1166,6 +1168,7 @@ async def execute_hire(
         probation=True,
         onboarding_completed=False,
         avatar_sprite=avatar_sprite_num,
+        talent_id=talent_id,
     )
     logger.debug("[execute_hire] Created Employee object: id={}, nickname={}, dept={}", emp_num, nickname, department)
     # Persist profile via store (single source of truth)
@@ -1192,6 +1195,7 @@ async def execute_hire(
         "probation": True,
         "onboarding_completed": False,
         "avatar_sprite": avatar_sprite_num,
+        "talent_id": talent_id,
     })
     await _store.save_employee_runtime(emp_num, status=STATUS_IDLE)
 
