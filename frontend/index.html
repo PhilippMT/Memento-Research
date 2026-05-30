@@ -56,9 +56,9 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .rs-dot.out-range{opacity:.3}
 .rs-label{font-family:var(--mono);font-size:.5rem;color:var(--text4);white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;text-align:center}
 .rs-label.in-range{color:var(--green);font-weight:600}
-.rs-agent-btn{font-family:var(--mono);font-size:.45rem;color:var(--text3);background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px;cursor:pointer;white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;text-align:center;margin-top:1px;transition:all .12s}
+.rs-agent-btn{font-family:var(--mono);font-size:.45rem;line-height:1.25;color:var(--text4);background:var(--bg);border:1px dashed var(--border);border-radius:3px;padding:1px 6px;cursor:pointer;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;text-align:center;margin-top:1px;transition:all .12s}
 .rs-agent-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
-.rs-agent-btn.assigned{color:var(--green);border-color:var(--green);background:var(--green-subtle);font-weight:600}
+.rs-agent-btn.assigned{color:var(--green);border-color:var(--green);border-style:solid;background:var(--green-subtle);font-weight:600}
 .rs-line{flex:1;height:2px;background:var(--border);min-width:4px;transition:background .2s}
 .rs-line.in-range{background:var(--green)}
 
@@ -549,16 +549,20 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
+// ``talent`` values must match STAGE_TALENT_DEFAULTS in pipeline_engine.py —
+// the dropdown's default label looks up the hired employee by talent_id so
+// the UI shows the canonical agent (e.g. "Topic Refiner") instead of
+// "Auto" when the user hasn't manually overridden the stage assignment.
 const STAGES = [
   {id:1,name:'Topic Refinement',talent:'topic-refiner',skill:'topic-refinement',bp:false,assignee:null},
-  {id:2,name:'Literature Survey',talent:'lit-surveyor',skill:'literature-survey',bp:false,assignee:null},
-  {id:3,name:'Idea Generation',talent:'idea-gen',skill:'idea-generation',bp:true,assignee:null},
-  {id:4,name:'Methodology Design',talent:'method',skill:'methodology-design',bp:false,assignee:null},
-  {id:5,name:'Experiment Design',talent:'exp-design',skill:'experiment-design',bp:false,assignee:null},
+  {id:2,name:'Literature Survey',talent:'literature-surveyor',skill:'literature-survey',bp:false,assignee:null},
+  {id:3,name:'Idea Generation',talent:'idea-generator',skill:'idea-generation',bp:true,assignee:null},
+  {id:4,name:'Methodology Design',talent:'methodology-designer',skill:'methodology-design',bp:false,assignee:null},
+  {id:5,name:'Experiment Design',talent:'experiment-designer',skill:'experiment-design',bp:false,assignee:null},
   {id:6,name:'Auto Experiment',talent:'experimentalist',skill:'auto-experiment',bp:false,assignee:null},
-  {id:7,name:'Result Analysis',talent:'analyst',skill:'result-analysis',bp:false,assignee:null},
+  {id:7,name:'Result Analysis',talent:'result-analyst',skill:'result-analysis',bp:false,assignee:null},
   {id:8,name:'Paper Generation',talent:'paper-writer',skill:'paper-generation',bp:false,assignee:null},
-  {id:9,name:'Self-Review',talent:'reviewer',skill:'self-review',bp:true,assignee:null},
+  {id:9,name:'Self-Review',talent:'paper-reviewer',skill:'self-review',bp:true,assignee:null},
 ];
 
 let startTime=null, paused=false, pauseResolve=null;
@@ -963,15 +967,32 @@ function _renderRangeSelector() {
     const dotClass = (isStart || isEnd) ? 'selected' : inRange ? 'in-range' : 'out-range';
     const labelClass = inRange ? ' in-range' : '';
     const assigned = _stageAssignments[s.id];
-    const agentName = assigned && window._employees
-      ? (window._employees.find(e => e.employee_number === assigned)?.name || 'Custom')
-      : 'Auto';
+    // Resolve the effective agent for this stage:
+    //   1. Manual override the user set via the picker.
+    //   2. Canonical default — the hired employee whose talent_id matches
+    //      STAGE_TALENT_DEFAULTS (mirrors backend routing).
+    //   3. "Auto (by skill)" when no canonical hire is on the roster yet.
+    let effectiveName = 'Auto (by skill)';
+    if (assigned && window._employees) {
+      effectiveName = window._employees.find(e => e.employee_number === assigned)?.name || 'Custom';
+    } else if (window._employees && s.talent) {
+      const canon = window._employees.find(e => e.talent_id === s.talent);
+      if (canon) effectiveName = canon.name;
+    }
+    // Display rule: only the *override* shows the agent name on the button,
+    // because user-chosen state is what's worth surfacing. The canonical
+    // default is implicit — shown via the tooltip and highlighted in the
+    // picker. This keeps the 9-stage row visually compact.
     const btnClass = assigned ? ' assigned' : '';
+    const btnLabel = assigned ? effectiveName : 'default';
+    const btnTooltip = assigned
+      ? `Stage ${s.id} override: ${effectiveName}`
+      : `Stage ${s.id} default: ${effectiveName} (click to override)`;
 
     html += `<div class="rs-node">`;
     html += `<div class="rs-dot ${dotClass}" onclick="_onRangeClick(${s.id})">${s.id}</div>`;
     html += `<div class="rs-label${labelClass}">${s.name}</div>`;
-    html += `<div class="rs-agent-btn${btnClass}" onclick="_showAgentPicker(${s.id},event)">▾ ${_escHtml(agentName)}</div>`;
+    html += `<div class="rs-agent-btn${btnClass}" title="${_escHtml(btnTooltip)}" onclick="_showAgentPicker(${s.id},event)">▾ ${_escHtml(btnLabel)}</div>`;
     html += `</div>`;
     if (i < STAGES.length - 1) {
       const lineClass = inRange && s.id < _rangeEnd ? 'in-range' : '';
@@ -1007,12 +1028,32 @@ function _showAgentPicker(stageId, event) {
   picker.id = 'agentPicker';
   picker.style.cssText = `position:fixed;z-index:400;background:var(--white);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow-lg);padding:4px 0;min-width:180px;max-height:240px;overflow-y:auto;left:${event.clientX}px;top:${event.clientY}px`;
 
-  // Auto option
-  picker.innerHTML = `<div class="ap-item" onclick="_assignStageAgent(${stageId},'')" style="padding:6px 12px;cursor:pointer;font-size:.78rem;color:var(--text3)">Auto (by skill)</div>`;
+  // Resolve the effective selection so the picker highlights the row that
+  // matches what's actually displayed on the closed button:
+  //   - explicit override (set via this picker), OR
+  //   - canonical default (employee whose talent_id matches STAGES[s].talent), OR
+  //   - "Auto (by skill)" when no canonical hire is on the roster.
+  const override = _stageAssignments[stageId];
+  let effectiveId = override || '';
+  if (!effectiveId) {
+    const stage = STAGES.find(s => s.id === stageId);
+    if (stage && stage.talent) {
+      const canon = window._employees.find(e => e.talent_id === stage.talent);
+      if (canon) effectiveId = canon.employee_number;
+    }
+  }
+
+  const _autoStyle = effectiveId === ''
+    ? 'padding:6px 12px;cursor:pointer;font-size:.78rem;background:var(--green-subtle);color:var(--green);font-weight:600'
+    : 'padding:6px 12px;cursor:pointer;font-size:.78rem;color:var(--text3)';
+  picker.innerHTML = `<div class="ap-item" onclick="_assignStageAgent(${stageId},'')" style="${_autoStyle}">Auto (by skill)</div>`;
 
   window._employees.forEach(emp => {
-    const selected = _stageAssignments[stageId] === emp.employee_number ? ' style="padding:6px 12px;cursor:pointer;font-size:.78rem;background:var(--green-subtle);color:var(--green);font-weight:600"' : ' style="padding:6px 12px;cursor:pointer;font-size:.78rem"';
-    picker.innerHTML += `<div${selected} onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''" onclick="_assignStageAgent(${stageId},'${emp.employee_number}')">${_escHtml(emp.name)} <span style="color:var(--text4);font-size:.65rem">${emp.role||''}</span></div>`;
+    const isSelected = effectiveId === emp.employee_number;
+    const rowStyle = isSelected
+      ? 'padding:6px 12px;cursor:pointer;font-size:.78rem;background:var(--green-subtle);color:var(--green);font-weight:600'
+      : 'padding:6px 12px;cursor:pointer;font-size:.78rem';
+    picker.innerHTML += `<div style="${rowStyle}" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background='${isSelected ? 'var(--green-subtle)' : ''}'" onclick="_assignStageAgent(${stageId},'${emp.employee_number}')">${_escHtml(emp.name)} <span style="color:var(--text4);font-size:.65rem">${emp.role||''}</span></div>`;
   });
 
   document.body.appendChild(picker);
