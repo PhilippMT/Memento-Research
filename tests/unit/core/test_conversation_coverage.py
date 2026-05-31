@@ -153,7 +153,14 @@ class TestSendMessage:
 
 class TestAutoReply:
     @pytest.mark.asyncio
-    async def test_schedule_auto_reply_credential_request_skips(self):
+    async def test_schedule_auto_reply_credential_request_arms_dedicated_timer(self):
+        """Credential requests no longer "skip" the timer entirely — they
+        get a dedicated long-window timer that resolves the Future with
+        empty string on fire. The old "skip" behavior left the agent
+        blocking on an unresolved Future forever when no UI was mounted.
+
+        Locks the new contract: a timer IS scheduled (not an EA-auto-reply,
+        a credential-specific one) so the system has an escape hatch."""
         from onemancompany.core.conversation import ConversationService, Interaction
         svc = ConversationService()
         loop = asyncio.get_event_loop()
@@ -161,10 +168,16 @@ class TestAutoReply:
             node_id="n1", tree_path="/tmp/tree.yaml", project_id="proj1",
             source_employee="00010", interaction_type="credential_request",
             message="need creds", future=loop.create_future(),
+            credential_env_key="SOME_API_KEY",
         )
-        # Should not schedule anything
         svc._start_auto_reply_timer("c1", interaction)
-        assert len(svc._auto_reply_tasks) == 0
+        assert len(svc._auto_reply_tasks) == 1, (
+            "credential_request must arm a timer (not EA-reply, a credential "
+            "timeout) — otherwise the agent's Future blocks forever"
+        )
+        # Tidy up so the test doesn't leak a sleeping task.
+        for t in list(svc._auto_reply_tasks.values()):
+            t.cancel()
 
     def test_schedule_auto_reply_no_event_loop(self):
         """When there's no running event loop (RuntimeError), skip gracefully."""

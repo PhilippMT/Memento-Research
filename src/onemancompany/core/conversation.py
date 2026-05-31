@@ -31,6 +31,17 @@ CONVERSATION_MESSAGES_FILENAME = "messages.yaml"
 # Default timeout for EA auto-reply (seconds)
 AUTO_REPLY_TIMEOUT = 120
 
+# Hard ceiling for ``credential_request`` interactions. The EA cannot
+# answer for the CEO (a real human has to paste the key), but we still
+# need an escape hatch — otherwise the agent's ``await future`` blocks
+# forever when the conversation UI isn't surfaced (e.g. AutoResearch
+# frontend has no ``#ceo-conv-input``). On fire we resolve the Future
+# with empty string; the agent's ``request_api_key`` already maps that
+# to ``status='no_key'`` and falls back gracefully. 10 minutes leaves
+# room for a real human to find and paste a key without letting a
+# missing-UI deployment hang for the full 1-hour task budget.
+CREDENTIAL_REQUEST_TIMEOUT = 600.0
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -391,13 +402,64 @@ class ConversationService:
         pending = self._pending.get(conv_id, deque())
         return len([p for p in pending if not p.future.done()])
 
+    def _start_credential_timeout(self, conv_id: str, interaction: Interaction) -> None:
+        """Arm a timer that resolves the credential-request Future with
+        empty string after :data:`CREDENTIAL_REQUEST_TIMEOUT`. Only fires
+        if the CEO doesn't reply first — ``resolve_interaction`` cancels
+        this timer when the real reply arrives.
+
+        Empty string is meaningful: ``request_api_key`` in common_tools
+        treats it as ``status='no_key'`` and lets the agent take an
+        alternative path. Compared with EA auto-reply, no fake text is
+        generated — only the CEO can supply a real key."""
+        async def _timer() -> None:
+            try:
+                await asyncio.sleep(CREDENTIAL_REQUEST_TIMEOUT)
+                if not interaction.future.done():
+                    interaction.future.set_result("")
+                    pending = self._pending.get(conv_id, deque())
+                    if interaction in pending:
+                        pending.remove(interaction)
+                    logger.warning(
+                        "[conversation] credential_request timed out "
+                        "conv_id={} node_id={} env_key={} — agent will see "
+                        "status='no_key' and fall back",
+                        conv_id, interaction.node_id,
+                        interaction.credential_env_key,
+                    )
+            except asyncio.CancelledError:
+                logger.debug(
+                    "[conversation] credential timeout cancelled (CEO replied) "
+                    "conv_id={} node_id={}",
+                    conv_id, interaction.node_id,
+                )
+            finally:
+                self._auto_reply_tasks.pop(f"{conv_id}:{interaction.node_id}", None)
+
+        timer_key = f"{conv_id}:{interaction.node_id}"
+        try:
+            task = asyncio.create_task(_timer())
+        except RuntimeError:  # pragma: no cover — no running event loop
+            logger.debug(
+                "[conversation] no event loop, skipping credential timer for node={}",
+                interaction.node_id,
+            )
+            return
+        self._auto_reply_tasks[timer_key] = task
+
     def _start_auto_reply_timer(self, conv_id: str, interaction: Interaction) -> None:
         """Start timer. If CEO doesn't respond within timeout, EA auto-replies.
 
         When CEO DND mode is on, auto-reply triggers immediately (0s timeout).
-        Credential requests never auto-reply — must wait for CEO.
+
+        Credential requests use a dedicated timer that resolves the Future
+        with empty string (NOT an EA-generated answer — only a real human
+        can paste a key). Without this safety net the agent's
+        ``await future`` blocks forever when the conversation UI isn't
+        mounted (e.g. AutoResearch frontend has no reply input).
         """
         if interaction.interaction_type == "credential_request":
+            self._start_credential_timeout(conv_id, interaction)
             return
         from onemancompany.core.config import get_ceo_dnd
         timeout = 0 if get_ceo_dnd() else AUTO_REPLY_TIMEOUT

@@ -198,8 +198,14 @@ class TestResolveCredentialInteraction:
         mock_update.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_credential_no_auto_reply_timer(self):
-        """Credential requests must NOT start auto-reply timer."""
+    async def test_credential_arms_dedicated_timeout_not_ea_auto_reply(self):
+        """Credential requests must NOT start an EA-auto-reply timer
+        (only a real human can paste a key — an EA-generated reply would
+        be a fabricated answer). They DO now arm a dedicated timeout
+        timer that resolves the Future with empty string after
+        ``CREDENTIAL_REQUEST_TIMEOUT`` — without that escape hatch the
+        agent's ``await future`` blocks forever when the conversation UI
+        isn't mounted."""
         import asyncio
         from onemancompany.core.conversation import ConversationService, Interaction
         from collections import deque
@@ -227,5 +233,12 @@ class TestResolveCredentialInteraction:
             mock_bus.publish = AsyncMock()
             await service.enqueue_interaction("conv_123", interaction)
 
-        # No timer should have been started
-        assert len(service._auto_reply_tasks) == 0
+        # A credential-timeout task IS armed (we replaced "skip" with
+        # "arm dedicated timer"). The task should still be pending.
+        assert len(service._auto_reply_tasks) == 1
+        timer_task = next(iter(service._auto_reply_tasks.values()))
+        assert not timer_task.done(), (
+            "credential timeout shouldn't have fired in <1 ms of test setup"
+        )
+        # Clean up so the test doesn't leak a sleeping task.
+        timer_task.cancel()
