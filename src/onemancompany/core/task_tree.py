@@ -88,6 +88,15 @@ class TaskNode:
 
     depends_on: list[str] = field(default_factory=list)
 
+    # Arbitrary per-node tags consumed by other subsystems. Today's caller
+    # is ``pipeline_engine._dispatch_to_employee`` which sets
+    # ``metadata['pipeline_managed'] = True`` so ``vessel.py``'s
+    # completion heuristic skips pipeline trees. Persisting this field
+    # is what keeps the guard intact across save/load cycles — without
+    # it, the tag evaporated on every reload and Stage 1's producer was
+    # misread as the EA orchestrator (issue #82 production case).
+    metadata: dict = field(default_factory=dict)
+
     # Directive chain: preserves the original description while allowing each upstream
     # node (EA, COO) to add binding instructions. The executor sees both the original
     # description AND all directives from the chain.
@@ -233,6 +242,7 @@ class TaskNode:
             "retry_count": self.retry_count,
             "stall_retry_count": self.stall_retry_count,
             "directives_count": len(self.directives),
+            "metadata": dict(self.metadata) if self.metadata else {},
         }
         if raw:
             # Head-biased: a quick glance at what the task produced.
