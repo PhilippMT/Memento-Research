@@ -442,6 +442,14 @@ class AppController {
         this.openPopup({ ...p, type: 'credentials' });
         return { text: `🔑 ${p.title || 'Credentials required'}`, cls: 'system', agent: p.agent || 'SYSTEM' };
       },
+      'env_request': (p) => {
+        const badge = document.getElementById('envPendingBadge');
+        if (badge) badge.style.display = '';
+        const focusKeys = (p.keys || []).map(k => k.name);
+        if (window._openEnvPanel) window._openEnvPanel(focusKeys);
+        const names = focusKeys.join(', ');
+        return { text: `🔧 ENV needed: ${names} — ${p.reason || ''}`, cls: 'system', agent: p.requested_by || 'AGENT' };
+      },
       'agent_task_update':   (p) => {
         // In-place update: use WS payload directly instead of REST re-fetch
         if (this.viewingEmployeeId && p.employee_id === this.viewingEmployeeId && p.task) {

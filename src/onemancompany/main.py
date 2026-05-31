@@ -653,6 +653,19 @@ async def lifespan(app: FastAPI):
     # walks every project iteration once on startup and replays the
     # missing event into the engine so the pipeline advances itself
     # without a hand-edit of the YAML.
+    # ENV Management — start the .env watcher and re-emit any placeholder
+    # rows so an agent that was blocked on credentials before the restart
+    # resumes once the user fills them in via the new panel.
+    try:
+        from onemancompany.core.env_manager import (
+            start_env_watcher,
+            restore_pending_on_startup,
+        )
+        start_env_watcher()
+        await restore_pending_on_startup()
+    except Exception as _exc:
+        logger.warning("[startup] env_manager bootstrap raised: {}", _exc)
+
     from onemancompany.core.pipeline_engine import recover_stalled_pipelines
     from onemancompany.core.config import PROJECTS_DIR
     try:

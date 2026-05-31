@@ -1469,8 +1469,46 @@ def _credential_env_key(service_name: str) -> str:
 
 
 @tool
+async def request_env(keys: list[dict], reason: str, employee_id: str = "") -> dict:
+    """Request one or more env vars from the CEO via the ENV Management panel.
+
+    The panel appears in the bottom-left of the UI with a row per key the
+    agent is waiting on, marked as Pending until the CEO fills them in.
+    This tool BLOCKS until every requested key has a value — there is no
+    timeout, so the agent resumes immediately when the CEO saves.
+
+    Use this in preference to ``request_api_key`` whenever a skill needs
+    more than one credential field (e.g. ``server_url`` + ``session_key``
+    for experiment-infra) or whenever the value isn't a single bare key.
+
+    Args:
+        keys: List of env-var descriptors. Each entry: ``{"name": str,
+            "label": str?, "secret": bool?}``. ``secret`` defaults True
+            (masked in UI). ``label`` defaults to the env var name.
+        reason: Human-readable explanation shown in the ENV panel.
+        employee_id: Your employee ID (auto-filled).
+
+    Returns:
+        ``{"status": "ok", "values": {name: value, ...}}`` once all keys
+        are saved. Values are also exported into ``os.environ``.
+    """
+    if err := _validate_employee_id(employee_id):
+        return err
+    from onemancompany.core.env_manager import request_env as _request_env
+    values = await _request_env(
+        keys=keys,
+        requested_by=employee_id,
+        reason=reason,
+    )
+    return {"status": "ok", "values": values}
+
+
+@tool
 async def request_api_key(service_name: str, reason: str, employee_id: str = "") -> dict:
-    """Request an API key from the CEO via the chat channel.
+    """DEPRECATED: prefer ``request_env`` which supports multi-field
+    credentials and surfaces via the ENV Management panel.
+
+    Request an API key from the CEO via the chat channel.
 
     CEO will see your request in the conversation and can type the key directly.
     The key is stored securely as an environment variable and masked in chat history.
@@ -2265,7 +2303,7 @@ def _register_all_internal_tools() -> None:
         set_cron, stop_cron_job, setup_webhook, remove_webhook,
         list_automations, report_to_ceo,
         start_background_task, check_background_task, stop_background_task,
-        list_background_tasks, request_api_key,
+        list_background_tasks, request_api_key, request_env,
     ]
     for t in _base:
         tool_registry.register(t, ToolMeta(name=t.name, category="base"))
