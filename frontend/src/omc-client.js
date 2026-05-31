@@ -72,6 +72,11 @@ export class OmcClient {
     return res.json();
   }
 
+  async getPipelineStageStats(window = 30) {
+    const res = await fetch(`${this.baseUrl}/api/pipeline/stage-stats?window=${encodeURIComponent(window)}`);
+    return res.json();
+  }
+
   async getProjectTree(projectId) {
     const res = await fetch(`${this.baseUrl}/api/projects/${projectId}/tree`);
     return res.json();

@@ -12,6 +12,7 @@ task tree for node management, and WebSocket events for frontend updates.
 from __future__ import annotations
 
 import re
+import time
 import yaml
 from pathlib import Path
 from loguru import logger
@@ -396,6 +397,7 @@ def get_or_load_pipeline(project_id: str, project_dir: str) -> "PipelineEngine |
     engine = PipelineEngine(project_id, project_dir, state.get("topic", ""))
     engine.state = state
     engine._ensure_memory_state()
+    engine._ensure_timing_state()
     _active_pipelines[project_id] = engine
     return engine
 
@@ -431,6 +433,11 @@ class PipelineEngine:
             "critic_result": None,
             "active_node_id": None,  # current task node being executed
             "active_employee_id": None,
+            "active_task_started_at": None,
+            "attempt_timing": {
+                "producer_elapsed_seconds": None,
+                "critic_elapsed_seconds": None,
+            },
             "memory_retrievals": {},
             "memory_episodes": {},
             "memory_feedback": {},
@@ -447,12 +454,22 @@ class PipelineEngine:
 
     def _save(self):
         self._ensure_memory_state()
+        self._ensure_timing_state()
         _save_state(self.project_dir, self.state)
 
     def _ensure_memory_state(self):
         self.state.setdefault("memory_retrievals", {})
         self.state.setdefault("memory_episodes", {})
         self.state.setdefault("memory_feedback", {})
+
+    def _ensure_timing_state(self):
+        self.state.setdefault("active_task_started_at", None)
+        timing = self.state.setdefault("attempt_timing", {})
+        if not isinstance(timing, dict):
+            timing = {}
+            self.state["attempt_timing"] = timing
+        timing.setdefault("producer_elapsed_seconds", None)
+        timing.setdefault("critic_elapsed_seconds", None)
 
     def _stage_def(self, stage_id: int = None) -> dict:
         sid = stage_id or self.current_stage
@@ -502,6 +519,7 @@ class PipelineEngine:
 
         self.state["active_node_id"] = node.id
         self.state["active_employee_id"] = employee_id
+        self.state["active_task_started_at"] = time.time()
         self._save()
 
         # Start each pipeline stage with a FRESH Claude conversation. The
@@ -572,6 +590,8 @@ class PipelineEngine:
         passed: bool,
         confidence: float | None,
         outcome: str,
+        producer_elapsed_seconds: float | None = None,
+        critic_elapsed_seconds: float | None = None,
     ) -> str | None:
         self._ensure_memory_state()
         stage_key = str(stage["id"])
@@ -594,6 +614,8 @@ class PipelineEngine:
                 reward=reward,
                 retrieved_memory_ids=retrieved_ids,
                 outcome=outcome,
+                producer_elapsed_seconds=producer_elapsed_seconds,
+                critic_elapsed_seconds=critic_elapsed_seconds,
             )
         except Exception as exc:
             logger.warning("[PIPELINE] Research memory write failed: {}", exc)
@@ -733,6 +755,7 @@ class PipelineEngine:
 
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
+        self._reset_attempt_timing()
         stage = self._stage_def()
         # Check if user assigned a specific employee to this stage
         assignments = self.state.get("stage_assignments", {})
@@ -960,6 +983,8 @@ class PipelineEngine:
                 passed=True,
                 confidence=None,
                 outcome="auto_pass",
+                producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
             )
             self._on_critic_pass(producer_result)
             return
@@ -1106,6 +1131,7 @@ class PipelineEngine:
 
     def on_task_complete(self, employee_id: str, node_id: str, result: str):
         """Called by vessel when a pipeline-managed task completes."""
+        self._record_active_phase_elapsed(self.phase)
         if self.phase in ("producer", "producer_b"):
             stage = self._stage_def()
             # Stub-result gate (#60 fix 2): if the producer returned a
@@ -1274,6 +1300,8 @@ class PipelineEngine:
                     passed=True,
                     confidence=confidence,
                     outcome="critic_pass",
+                    producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                    critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
                 )
                 self._save()
                 logger.info("[PIPELINE] Stage {} PASSED (confidence={})", stage["id"], confidence)
@@ -1288,6 +1316,8 @@ class PipelineEngine:
                         passed=False,
                         confidence=confidence,
                         outcome="critic_reject_retry",
+                        producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                        critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
                     )
                     self.state["retries"] = retries + 1
                     self._save()
@@ -1302,6 +1332,8 @@ class PipelineEngine:
                         passed=False,
                         confidence=confidence,
                         outcome="critic_reject_exhausted",
+                        producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                        critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
                     )
                     logger.warning("[PIPELINE] Stage {} exhausted retries, holding for CEO", stage["id"])
                     self.state["phase"] = "gate"
@@ -1329,6 +1361,7 @@ class PipelineEngine:
         first-completed stage anchor for an EA orchestrator and declare
         the project complete.
         """
+        self._record_active_phase_elapsed(self.phase)
         stage = self._stage_def()
         current_phase = self.phase
 
@@ -1768,11 +1801,58 @@ class PipelineEngine:
         }
         if confidence is not None:
             payload["confidence"] = confidence
+        if event_type == "stage_start":
+            hint = self._stage_duration_hint(stage_id)
+            if hint:
+                payload["eta"] = hint
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
         except RuntimeError as exc:
             logger.debug("Skipping stage event; no running event loop: {}", exc)
+
+    def _reset_attempt_timing(self) -> None:
+        self._ensure_timing_state()
+        self.state["attempt_timing"] = {
+            "producer_elapsed_seconds": 0.0,
+            "critic_elapsed_seconds": None,
+        }
+
+    def _record_active_phase_elapsed(self, phase: str) -> None:
+        self._ensure_timing_state()
+        started_at = self.state.get("active_task_started_at")
+        self.state["active_task_started_at"] = None
+        if started_at is None:
+            return
+        try:
+            elapsed = max(0.0, float(time.time()) - float(started_at))
+        except (TypeError, ValueError):
+            return
+
+        timing = self.state.get("attempt_timing", {})
+        if phase in ("producer", "producer_b"):
+            previous = timing.get("producer_elapsed_seconds")
+            timing["producer_elapsed_seconds"] = float(previous or 0.0) + elapsed
+        elif phase == "critic":
+            timing["critic_elapsed_seconds"] = elapsed
+
+    def _stage_duration_hint(self, stage_id: int) -> dict | None:
+        try:
+            stats = self._memory_store().summarize_stage_durations(limit_per_stage=30)
+        except Exception as exc:
+            logger.debug("[PIPELINE] Stage duration stats unavailable: {}", exc)
+            return None
+        stage = stats.get(str(stage_id))
+        if not stage:
+            return None
+        return {
+            "samples": int(stage.get("samples", 0) or 0),
+            "window_size": int(stage.get("window_size", 0) or 0),
+            "total": stage.get("total", {}),
+            "producer": stage.get("producer", {}),
+            "critic": stage.get("critic", {}),
+            "retry_rate": float(stage.get("retry_rate", 0.0) or 0.0),
+        }
 
     def _emit_gate_event(self, stage_id: int, confidence: float = None, exhausted: bool = False):
         """Emit breakpoint/gate event for frontend to show approval dialog."""

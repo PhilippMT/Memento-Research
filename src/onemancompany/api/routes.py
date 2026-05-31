@@ -1043,6 +1043,22 @@ async def list_pipeline_branches(project_id: str):
         return {"current": None, "branches": []}
 
 
+@router.get("/api/pipeline/stage-stats")
+async def pipeline_stage_stats(window: int = 30):
+    """Return rolling stage duration stats from research memory."""
+    from onemancompany.core.config import PROJECTS_DIR
+    from onemancompany.core.research_memory import ResearchMemoryStore
+
+    window = max(1, min(int(window or 30), 200))
+    store = ResearchMemoryStore("global", PROJECTS_DIR)
+    try:
+        stages = store.summarize_stage_durations(limit_per_stage=window)
+    except Exception as exc:
+        logger.warning("[pipeline-stage-stats] failed to summarize durations: {}", exc)
+        stages = {}
+    return {"window_size": window, "stages": stages}
+
+
 @router.get("/api/pipeline/{project_id}/status")
 async def pipeline_status(project_id: str):
     """Get current pipeline state for a project."""
@@ -1114,6 +1130,8 @@ async def pipeline_status(project_id: str):
         "topic": engine.topic,
         "start_stage": engine.state.get("start_stage", 1),
         "end_stage": engine.state.get("end_stage", 9),
+        "active_task_started_at": engine.state.get("active_task_started_at"),
+        "attempt_timing": engine.state.get("attempt_timing", {}),
         "stage_results": engine.state.get("stage_results", {}),
         "critic_result": engine.state.get("critic_result", None),
         "stages": STAGES,

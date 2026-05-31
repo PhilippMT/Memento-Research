@@ -231,6 +231,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .sc-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff;background:var(--green);flex-shrink:0}
 .sc-title{flex:1;font-size:.82rem;font-weight:600;color:var(--text)}
 .sc-title small{font-weight:400;color:var(--text3);margin-left:6px}
+.sc-eta{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.6rem;background:var(--bg);color:var(--text3);white-space:nowrap}
 .sc-badge{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.6rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
 .sc-badge.badge-running{background:var(--gold-subtle);color:#8B7332}
 .sc-badge.badge-done{background:var(--green-subtle);color:var(--green)}
@@ -628,6 +629,7 @@ function _getProject(pid) {
 // created via API rather than the launch form).
 async function hydrateProjectFromBackend(pid) {
   const client = window._omcClient;
+  const ctrl = window._controller;
   if (!client || typeof client.getPipelineStatus !== 'function') return;
   let status;
   try {
@@ -664,6 +666,7 @@ async function hydrateProjectFromBackend(pid) {
     if (!meta) return;
     const cardId = `stage${sid}`;  // match pipeline-controller._ensureCard
     getStageCard(cardId, `Stage ${sid} — ${meta.name}`, meta.name, meta.name.slice(0, 2).toUpperCase());
+    if (ctrl) ctrl.stageCardIds[sid] = cardId;
     // The new idea-construction prompt no longer prefixes Stage 3 markdown
     // with a `# Stage 3: — {topic}` heading, so the lcg renderer's topic
     // parser can't see the project topic. Inject it ourselves when missing
@@ -690,6 +693,10 @@ async function hydrateProjectFromBackend(pid) {
 
   if (status.critic_result) {
     updateCritic(`stage${currentStage}`, status.critic_result);
+  }
+  if (ctrl && phase && phase !== 'done') {
+    ctrl.currentStage = currentStage;
+    ctrl.hydrateStageRuntime(currentStage, phase, status.active_task_started_at);
   }
 
   // Backfill the workspace panel. Live runs fill it via `file_written`

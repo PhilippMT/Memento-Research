@@ -96,7 +96,13 @@ export class EventAdapter {
         if (payload && payload.pipeline_managed) {
           // Pipeline engine events — authoritative stage info
           if (payload.type === 'stage_start') {
-            this.emit('stage_start', { stageId: payload.stage, stageName: payload.stage_name, employeeName: payload.employee_name, employeeId: payload.employee_id });
+            this.emit('stage_start', {
+              stageId: payload.stage,
+              stageName: payload.stage_name,
+              employeeName: payload.employee_name,
+              employeeId: payload.employee_id,
+              eta: payload.eta,
+            });
           } else if (payload.type === 'stage_complete') {
             this.emit('stage_complete', { stageId: payload.stage, confidence: payload.confidence });
           } else if (payload.type === 'stage_reviewing') {

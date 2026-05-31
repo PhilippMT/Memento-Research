@@ -105,3 +105,32 @@ async def test_branches_endpoint(tmp_path):
 
     assert result["current"] == "main"
     assert len(result["branches"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stage_stats_endpoint(tmp_path):
+    from onemancompany.api.routes import pipeline_stage_stats
+    from onemancompany.core.research_memory import ResearchMemoryStore
+
+    store = ResearchMemoryStore("p1", tmp_path, memory_root=tmp_path / "memory")
+    store.record_stage_episode(
+        topic="timing",
+        stage={"id": 2, "name": "Literature Survey", "skill": "literature_surveyor"},
+        producer_result="p",
+        critic_result="c",
+        passed=True,
+        confidence=0.8,
+        retries=0,
+        reward=0.8,
+        outcome="critic_pass",
+        producer_elapsed_seconds=300,
+        critic_elapsed_seconds=60,
+    )
+
+    with patch("onemancompany.core.config.PROJECTS_DIR", tmp_path), \
+         patch("onemancompany.core.research_memory._default_memory_root", return_value=tmp_path / "memory"):
+        result = await pipeline_stage_stats(window=20)
+
+    assert result["window_size"] == 20
+    assert "2" in result["stages"]
+    assert result["stages"]["2"]["total"]["mean_seconds"] == 360

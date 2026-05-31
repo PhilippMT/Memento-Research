@@ -163,6 +163,8 @@ class ResearchMemoryStore:
         reward: float,
         retrieved_memory_ids: list[str] | None = None,
         outcome: str = "critic_review",
+        producer_elapsed_seconds: float | None = None,
+        critic_elapsed_seconds: float | None = None,
     ) -> str:
         now = _now_iso()
         stage_id = int(stage.get("id", 0) or 0)
@@ -204,6 +206,12 @@ class ResearchMemoryStore:
             "q_visits": 1,
             "reward_ma": q_value,
             "outcome": outcome,
+            "producer_elapsed_seconds": (
+                float(producer_elapsed_seconds) if producer_elapsed_seconds is not None else None
+            ),
+            "critic_elapsed_seconds": (
+                float(critic_elapsed_seconds) if critic_elapsed_seconds is not None else None
+            ),
             "retrieved_memory_ids": list(retrieved_memory_ids or []),
             "ceo_feedback": "",
             "ceo_approved": None,
@@ -252,6 +260,80 @@ class ResearchMemoryStore:
         if updated_ids:
             self._write_records(records)
         return {"episode_id": episode_id, "updated_ids": updated_ids, "reward_signal": reward_signal}
+
+    def summarize_stage_durations(self, *, limit_per_stage: int = 30) -> dict[str, dict[str, Any]]:
+        records = self._read_records()
+        if not records:
+            return {}
+
+        by_stage: dict[int, list[dict[str, Any]]] = {}
+        for record in records:
+            stage_id = int(record.get("stage_id", 0) or 0)
+            if stage_id <= 0:
+                continue
+            by_stage.setdefault(stage_id, []).append(record)
+
+        def _to_float(value: Any) -> float | None:
+            if value is None:
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            if math.isnan(number) or number < 0:
+                return None
+            return number
+
+        def _metric(values: list[float]) -> dict[str, float]:
+            if not values:
+                return {"mean_seconds": 0.0, "stdev_seconds": 0.0}
+            mean = sum(values) / len(values)
+            variance = sum((value - mean) ** 2 for value in values) / len(values)
+            return {"mean_seconds": mean, "stdev_seconds": math.sqrt(max(0.0, variance))}
+
+        summary: dict[str, dict[str, Any]] = {}
+        for stage_id, stage_records in by_stage.items():
+            recent = stage_records[-max(1, int(limit_per_stage)) :]
+            producer_values = [
+                value
+                for value in (_to_float(record.get("producer_elapsed_seconds")) for record in recent)
+                if value is not None
+            ]
+            critic_values = [
+                value
+                for value in (_to_float(record.get("critic_elapsed_seconds")) for record in recent)
+                if value is not None
+            ]
+            total_values = []
+            for record in recent:
+                producer = _to_float(record.get("producer_elapsed_seconds"))
+                critic = _to_float(record.get("critic_elapsed_seconds"))
+                total = (producer or 0.0) + (critic or 0.0)
+                if total > 0:
+                    total_values.append(total)
+
+            total_metric = _metric(total_values)
+            mean_total = total_metric["mean_seconds"]
+            stdev_total = total_metric["stdev_seconds"]
+            summary[str(stage_id)] = {
+                "stage_id": stage_id,
+                "stage_name": str(recent[-1].get("stage_name", "")) if recent else "",
+                "samples": len(total_values),
+                "window_size": len(recent),
+                "total": {
+                    **total_metric,
+                    "typical_min_seconds": max(0.0, mean_total - stdev_total),
+                    "typical_max_seconds": mean_total + stdev_total,
+                },
+                "producer": _metric(producer_values),
+                "critic": _metric(critic_values),
+                "retry_rate": (
+                    sum(1 for record in recent if int(record.get("retries", 0) or 0) > 0) / len(recent)
+                    if recent
+                    else 0.0
+                ),
+            }
+        return summary
 
     def _read_records(self) -> list[dict[str, Any]]:
         if not self.memory_path.exists():

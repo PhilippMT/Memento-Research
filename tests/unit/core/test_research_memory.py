@@ -101,3 +101,43 @@ def test_apply_ceo_feedback_updates_episode_and_related_memory_q(tmp_path):
     assert "dataset" in records[episode_id]["ceo_feedback"]
     assert records[episode_id]["reward"] < 0.45
     assert records[related_id]["q_value"] < 0.8
+
+
+def test_summarize_stage_durations_includes_total_and_subphases(tmp_path):
+    store = ResearchMemoryStore("p1", tmp_path, memory_root=tmp_path / "memory")
+    stage = _stage(2)
+    store.record_stage_episode(
+        topic="timing",
+        stage=stage,
+        producer_result="p1",
+        critic_result="c1",
+        passed=True,
+        confidence=0.8,
+        retries=0,
+        reward=0.8,
+        outcome="critic_pass",
+        producer_elapsed_seconds=120,
+        critic_elapsed_seconds=30,
+    )
+    store.record_stage_episode(
+        topic="timing",
+        stage=stage,
+        producer_result="p2",
+        critic_result="c2",
+        passed=False,
+        confidence=0.2,
+        retries=1,
+        reward=-0.8,
+        outcome="critic_reject_retry",
+        producer_elapsed_seconds=240,
+        critic_elapsed_seconds=60,
+    )
+
+    stats = store.summarize_stage_durations(limit_per_stage=30)
+    stage_stats = stats["2"]
+
+    assert stage_stats["samples"] == 2
+    assert stage_stats["total"]["mean_seconds"] == 225
+    assert stage_stats["producer"]["mean_seconds"] == 180
+    assert stage_stats["critic"]["mean_seconds"] == 45
+    assert stage_stats["retry_rate"] == 0.5
