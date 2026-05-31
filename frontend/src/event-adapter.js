@@ -17,6 +17,15 @@ export class EventAdapter {
       breakpoint_hit: [],
     };
 
+    // Tracks task ids we've already fired ``clarification_needed`` for.
+    // _handleTaskUpdate runs on EVERY task status change, so without
+    // this guard a single task whose description matches the heuristic
+    // would re-open the popup on PROCESSING → COMPLETED → (retry) and
+    // again on every subsequent attempt. Cleared on terminal task
+    // updates so a follow-up genuinely-new clarification on the same
+    // task id can still fire.
+    this._clarificationEmittedFor = new Set();
+
     // Employee ID → display info
     this.employees = {
       '00001': { name: 'You', initials: 'U', role: 'director' },
@@ -236,14 +245,28 @@ export class EventAdapter {
 
     // Check if task is a CEO request or needs clarification.
     // Skip if a breakpoint action panel is already showing — it handles the interaction.
-    if (task.node_type === 'CEO_REQUEST' || p.ceo_request || this._isClarificationRequest(desc)) {
-      if (!document.getElementById('action-panel-global')) {
+    // Dedup by task id: _handleTaskUpdate fires on every status change,
+    // so without this we'd re-open the popup on each one for the same task.
+    const taskId = task.id || task.task_id || p.task_id || '';
+    const shouldFire = (
+      task.node_type === 'CEO_REQUEST' || p.ceo_request || this._isClarificationRequest(desc)
+    );
+    if (shouldFire && !document.getElementById('action-panel-global')) {
+      if (taskId && this._clarificationEmittedFor.has(taskId)) {
+        // Already popped for this task; skip until it resolves.
+      } else {
+        if (taskId) this._clarificationEmittedFor.add(taskId);
         this.emit('clarification_needed', {
           agent: name,
           employeeId: empId || '',
           message: desc || 'Agent needs your input.',
         });
       }
+    }
+    // Clear dedup state on terminal task updates so a future task with
+    // the same id (rare but possible on retry-with-reset) can re-fire.
+    if (taskId && (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'finished')) {
+      this._clarificationEmittedFor.delete(taskId);
     }
 
     if (status === 'running' || status === 'in_progress' || status === 'processing') {
@@ -499,11 +522,17 @@ export class EventAdapter {
   _isClarificationRequest(text) {
     if (!text || text.length < 10) return false;
     const lower = text.toLowerCase();
+    // Markers are intentionally narrow. Broader phrases like "your decision"
+    // / "please confirm" / "please provide" / "could you confirm" match
+    // boilerplate prompts (e.g. "Return your decision in JSON format" lives
+    // in core/conversation.py and core/routine.py), turning every critic
+    // dispatch into a clarification popup. Anything kept here must mean
+    // "agent is stuck and is asking the user", not "instruction prose".
     const markers = [
       'awaiting ceo', 'awaiting your', 'need your input',
-      'need clarification', 'please clarify', 'please confirm',
-      'waiting for your', 'your guidance', 'your decision',
-      'could you clarify', 'could you confirm', 'please provide',
+      'need clarification', 'please clarify',
+      'waiting for your', 'your guidance',
+      'could you clarify',
       'need your approval', 'require your input',
     ];
     return markers.some(m => lower.includes(m));
