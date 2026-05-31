@@ -13,7 +13,6 @@ export class EventAdapter {
       director_action: [],
       system_event: [],
       file_written: [],
-      clarification_needed: [],
       breakpoint_hit: [],
     };
 
@@ -138,10 +137,6 @@ export class EventAdapter {
         this.emit('file_written', payload);
         break;
 
-      case 'pending_interaction':
-        this._handleClarification(payload);
-        break;
-
       default:
         // Show unrecognized events as system messages with readable text
         this._handleGeneric(type, agent, payload);
@@ -204,15 +199,6 @@ export class EventAdapter {
     // Stage detection is now handled by the pipeline engine backend.
     // Do NOT emit stage_start from text heuristics — it causes duplicates.
 
-    // Detect if agent is asking CEO for clarification
-    if (this._isClarificationRequest(text)) {
-      this.emit('clarification_needed', {
-        agent: name,
-        employeeId: empId || '',
-        message: text,
-      });
-    }
-
     this.emit('meeting_message', { agent: name, role, message: text });
   }
 
@@ -234,17 +220,10 @@ export class EventAdapter {
     // Detect stage from description or result
     const stageId = this._detectStage(desc) || this._detectStage(result) || this._inferStageFromEmployee(empId);
 
-    // Check if task is a CEO request or needs clarification.
-    // Skip if a breakpoint action panel is already showing — it handles the interaction.
-    if (task.node_type === 'CEO_REQUEST' || p.ceo_request || this._isClarificationRequest(desc)) {
-      if (!document.getElementById('action-panel-global')) {
-        this.emit('clarification_needed', {
-          agent: name,
-          employeeId: empId || '',
-          message: desc || 'Agent needs your input.',
-        });
-      }
-    }
+    // (Removed: clarification-popup trigger. The dialog was triggered by
+    // heuristic text matching that misfired on standard prompts, and
+    // genuine "agent asks user" cases already flow through the breakpoint
+    // action panel — no separate floating dialog needed.)
 
     if (status === 'running' || status === 'in_progress' || status === 'processing') {
       // Emit stage_start so pipeline-controller creates the card
@@ -479,34 +458,6 @@ export class EventAdapter {
         payload: { text: summary },
       });
     }
-  }
-
-  // ── Clarification requests ──
-
-  _handleClarification(p) {
-    if (!p) return;
-    const empId = p.employee_id || p.source_employee || '';
-    const emp = empId ? this._emp(empId) : null;
-    const message = p.message || p.description || p.text || 'Agent needs your input.';
-    this.emit('clarification_needed', {
-      agent: emp ? emp.name : 'Agent',
-      employeeId: empId,
-      message,
-    });
-  }
-
-  // Check if a conversation message is actually asking the CEO for input
-  _isClarificationRequest(text) {
-    if (!text || text.length < 10) return false;
-    const lower = text.toLowerCase();
-    const markers = [
-      'awaiting ceo', 'awaiting your', 'need your input',
-      'need clarification', 'please clarify', 'please confirm',
-      'waiting for your', 'your guidance', 'your decision',
-      'could you clarify', 'could you confirm', 'please provide',
-      'need your approval', 'require your input',
-    ];
-    return markers.some(m => lower.includes(m));
   }
 
   // ── Filters ──

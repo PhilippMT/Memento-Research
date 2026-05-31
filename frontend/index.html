@@ -1969,120 +1969,12 @@ async function startDemo(){
   btn.disabled=false;btn.textContent='Launch Pipeline';
 }
 
-// ── Floating Chat Dialog ──
-let _chatDialog = null;
-let _chatMessages = []; // {from:'agent'|'user', sender:string, text:string}
-let _chatAgentName = '';
-let _chatEmployeeId = '';
-
-function openChatDialog(agentName, employeeId, message) {
-  _chatAgentName = agentName || 'Agent';
-  _chatEmployeeId = employeeId || '';
-
-  // Add the agent's message to history
-  _chatMessages.push({ from: 'agent', sender: _chatAgentName, text: message });
-
-  if (_chatDialog) {
-    // Already open — just append the new message
-    _renderChatMessages();
-    return;
-  }
-
-  _chatDialog = document.createElement('div');
-  _chatDialog.className = 'chat-dialog';
-  _chatDialog.id = 'chatDialog';
-  _chatDialog.innerHTML = `
-    <div class="chat-dialog-head">
-      <div class="chat-dialog-avatar">?</div>
-      <div class="chat-dialog-title">${_escHtml(_chatAgentName)}<small>needs your input</small></div>
-      <button class="chat-dialog-close" id="chatClose">✕</button>
-    </div>
-    <div class="chat-dialog-messages" id="chatMessages"></div>
-    <div class="chat-dialog-input">
-      <input type="text" id="chatInput" placeholder="Type your reply..." autocomplete="off">
-      <button class="chat-dialog-send" id="chatSend">Send</button>
-    </div>`;
-
-  document.body.appendChild(_chatDialog);
-  _renderChatMessages();
-
-  const input = document.getElementById('chatInput');
-  const sendBtn = document.getElementById('chatSend');
-
-  input.focus();
-
-  const doSend = async () => {
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-    sendBtn.disabled = true;
-    sendBtn.textContent = 'Sending...';
-
-    _chatMessages.push({ from: 'user', sender: 'You', text });
-    _renderChatMessages();
-
-    // Send to backend
-    const sessionId = window._currentSessionId || window._currentProjectId;
-    if (!sessionId || !window._omcClient) {
-      _chatMessages.push({ from: 'agent', sender: 'System', text: 'Not connected to backend or no active project.' });
-      _renderChatMessages();
-      sendBtn.disabled = false;
-      sendBtn.textContent = 'Send';
-      return;
-    }
-
-    try {
-      const res = await window._omcClient.sendSessionMessage(sessionId, text);
-      sendBtn.textContent = 'Sent ✓';
-      sendBtn.disabled = false;
-      setTimeout(() => { sendBtn.textContent = 'Send'; }, 2000);
-      // Also post to active stage card so user sees it in pipeline
-      postNotice(`You replied: "${text}"`, 'ok');
-    } catch (e) {
-      _chatMessages.push({ from: 'agent', sender: 'System', text: 'Failed to send: ' + (e.message || 'unknown error') });
-      _renderChatMessages();
-      sendBtn.disabled = false;
-      sendBtn.textContent = 'Send';
-    }
-  };
-
-  sendBtn.onclick = doSend;
-  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doSend(); } };
-
-  document.getElementById('chatClose').onclick = closeChatDialog;
-}
-
-function closeChatDialog() {
-  if (_chatDialog) {
-    _chatDialog.remove();
-    _chatDialog = null;
-  }
-}
-
-function _renderChatMessages() {
-  const container = document.getElementById('chatMessages');
-  if (!container) return;
-  container.innerHTML = _chatMessages.map(m => `
-    <div class="chat-msg from-${m.from}">
-      <div class="chat-bubble">
-        <div class="chat-sender">${_escHtml(m.sender)}</div>
-        ${m.from === 'agent' ? _renderMd(_clean(m.text)) : _escHtml(m.text)}
-      </div>
-    </div>`).join('');
-  container.scrollTop = container.scrollHeight;
-}
-
-// Also post the clarification to the active stage card as a notice
-window.openChatDialog = openChatDialog;
-window.closeChatDialog = closeChatDialog;
-window.isChatDialogOpen = () => !!_chatDialog;
 
 // ── Breakpoint Dialog (reuses chat-dialog style) ──
 let _bpDialog = null;
 let _bpStageId = null;
 
 function openBreakpointDialog(stageId, stageName) {
-  closeChatDialog(); // close any existing chat
   if (_bpDialog) _bpDialog.remove();
   _bpStageId = stageId;
 

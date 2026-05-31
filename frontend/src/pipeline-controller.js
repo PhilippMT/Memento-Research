@@ -17,7 +17,6 @@ export class PipelineController {
     adapter.on('director_action', (e) => this.handleDirectorAction(e));
     adapter.on('system_event', (e) => this.handleSystemEvent(e));
     adapter.on('file_written', (e) => this.handleFileWritten(e));
-    adapter.on('clarification_needed', (e) => this.handleClarification(e));
     adapter.on('breakpoint_hit', (e) => this.handleBreakpointHit(e));
   }
 
@@ -200,17 +199,6 @@ export class PipelineController {
   handleFileWritten(data) {
     if (typeof addWorkspaceFile === 'function') {
       addWorkspaceFile(data);
-    }
-  }
-
-  handleClarification({ agent, employeeId, message }) {
-    // If a breakpoint dialog is showing, just add the message to it
-    if (this.pausedStageId && typeof addBreakpointMessage === 'function') {
-      addBreakpointMessage(agent, message);
-      return;
-    }
-    if (typeof openChatDialog === 'function') {
-      openChatDialog(agent, employeeId, message);
     }
   }
 
