@@ -85,6 +85,130 @@ def _load_state(project_dir: str) -> dict:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Startup watchdog — replay missing on_task_complete / on_task_failed events
+# that vanished into a backend crash, completion-consumer timeout, or EA /
+# pipeline_engine desync (see issue #82 for the production stall this fixes).
+# ---------------------------------------------------------------------------
+
+# Terminal pipeline phases — never re-fire stage events.
+_WATCHDOG_TERMINAL_PHASES = frozenset({"done", "failed"})
+
+# Task-tree node statuses the watchdog treats as "stage producer finished
+# successfully — engine should advance". COMPLETED is the canonical state
+# right after submit_result; ACCEPTED / FINISHED are reached after the EA
+# wraps up and would normally trigger the same engine advance.
+_WATCHDOG_COMPLETED_STATUSES = frozenset({"completed", "accepted", "finished"})
+
+# Task-tree node statuses that mean the producer is done but failed —
+# engine.on_task_failed should retry / fail the stage.
+_WATCHDOG_FAILED_STATUSES = frozenset({"failed", "cancelled"})
+
+
+def recover_stalled_pipelines(projects_root) -> int:
+    """Scan every project iteration under ``projects_root`` for a
+    ``pipeline_state.yaml`` whose ``active_node_id`` points at a task tree
+    node that has already resolved on disk, and re-fire the missing
+    ``on_task_complete`` / ``on_task_failed`` event into the pipeline
+    engine. Returns the number of stalled pipelines recovered.
+
+    Idempotent: a second call after the first one ran finds nothing to do
+    (active_node_id will be cleared by the engine handlers).
+    """
+    import yaml as _yaml
+    from pathlib import Path as _Path
+
+    root = _Path(projects_root)
+    if not root.exists():
+        return 0
+
+    recovered = 0
+    for state_path in root.glob("*/iterations/*/pipeline_state.yaml"):
+        try:
+            state = _yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("[watchdog] failed to read {}: {}", state_path, exc)
+            continue
+
+        active_node_id = state.get("active_node_id")
+        phase = state.get("phase", "")
+        if not active_node_id or phase in _WATCHDOG_TERMINAL_PHASES:
+            continue
+
+        # Resolve project_id and project_dir from the layout
+        # ``<root>/<project_id>/iterations/<iter>/pipeline_state.yaml``.
+        iter_dir = state_path.parent
+        project_id = iter_dir.parents[1].name
+        project_dir = str(iter_dir)
+
+        tree_path = iter_dir / "task_tree.yaml"
+        if not tree_path.exists():
+            logger.warning(
+                "[watchdog] task_tree.yaml missing for project={} iter={}, skipping",
+                project_id, iter_dir.name,
+            )
+            continue
+
+        try:
+            tree_doc = _yaml.safe_load(tree_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("[watchdog] failed to read {}: {}", tree_path, exc)
+            continue
+
+        node = (tree_doc.get("nodes") or {}).get(active_node_id)
+        if not node:
+            logger.warning(
+                "[watchdog] active_node {} not found in tree for project={}, skipping",
+                active_node_id, project_id,
+            )
+            continue
+
+        node_status = str(node.get("status", "")).lower()
+        if node_status not in (_WATCHDOG_COMPLETED_STATUSES | _WATCHDOG_FAILED_STATUSES):
+            # Node is still in flight (pending / processing / holding / blocked).
+            # Engine is right to keep waiting.
+            continue
+
+        engine = get_or_load_pipeline(project_id, project_dir)
+        if engine is None:
+            logger.warning(
+                "[watchdog] could not load pipeline for project={}, skipping",
+                project_id,
+            )
+            continue
+
+        employee_id = str(node.get("employee_id", ""))
+        result = str(node.get("result", "") or "")
+
+        try:
+            if node_status in _WATCHDOG_COMPLETED_STATUSES:
+                logger.warning(
+                    "[watchdog] project={} stage={} phase={} active_node={} is {} on disk "
+                    "but pipeline engine still believes it's in flight — replaying "
+                    "on_task_complete",
+                    project_id, state.get("current_stage"), phase,
+                    active_node_id, node_status,
+                )
+                engine.on_task_complete(employee_id, active_node_id, result)
+            else:
+                logger.warning(
+                    "[watchdog] project={} stage={} phase={} active_node={} is {} on disk "
+                    "but pipeline engine still believes it's in flight — replaying "
+                    "on_task_failed",
+                    project_id, state.get("current_stage"), phase,
+                    active_node_id, node_status,
+                )
+                engine.on_task_failed(employee_id, active_node_id, result or "stalled, recovered by watchdog")
+            recovered += 1
+        except Exception as exc:
+            logger.exception(
+                "[watchdog] replay failed for project={} node={}: {}",
+                project_id, active_node_id, exc,
+            )
+
+    return recovered
+
+
 def _save_state(project_dir: str, state: dict):
     path = Path(project_dir) / STATE_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
