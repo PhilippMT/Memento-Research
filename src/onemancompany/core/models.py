@@ -132,6 +132,7 @@ class EventType(str, Enum):
     BACKGROUND_TASK_UPDATE = "background_task_update"
     CRON_STATUS_CHANGE = "cron_status_change"
     TALENT_PROFILE_ERROR = "talent_profile_error"
+    PIPELINE_STUCK = "pipeline_stuck"
     ACTIVITY = "activity"
     # Additional types from legacy Literal definition
     EMPLOYEE_REVIEWED = "employee_reviewed"

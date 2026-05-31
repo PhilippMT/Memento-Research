@@ -105,6 +105,94 @@ _WATCHDOG_COMPLETED_STATUSES = frozenset({"completed", "accepted", "finished"})
 _WATCHDOG_FAILED_STATUSES = frozenset({"failed", "cancelled"})
 
 
+# Pipelines whose ``pipeline_state.yaml`` has not been written for at least
+# this many seconds, AND whose producer node is still in-flight on disk
+# (so :func:`recover_stalled_pipelines` cannot auto-resolve it), are
+# surfaced as ``PIPELINE_STUCK`` events for user intervention. Producers
+# typically finish in well under 30 minutes; >1 h with zero state change
+# means something silent went wrong (issue #82, PR 3).
+PIPELINE_STUCK_THRESHOLD_SECONDS = 3600
+
+
+def detect_stuck_pipelines(projects_root) -> list[dict]:
+    """Scan every project iteration for pipelines that are silently stuck
+    and beyond :func:`recover_stalled_pipelines`'s reach.
+
+    A pipeline is "stuck" when ALL of the following hold:
+      - ``pipeline_state.yaml`` has an ``active_node_id`` and a
+        non-terminal ``phase``,
+      - the active node is still PROCESSING / PENDING / etc. on disk
+        (so the recovery watchdog has nothing to replay),
+      - the state file has not been written for at least
+        :data:`PIPELINE_STUCK_THRESHOLD_SECONDS`.
+
+    Returns descriptors used by the lifespan to publish a
+    :data:`EventType.PIPELINE_STUCK` event the user can act on.
+    """
+    import time as _time
+    import yaml as _yaml
+    from pathlib import Path as _Path
+
+    root = _Path(projects_root)
+    if not root.exists():
+        return []
+
+    now = _time.time()
+    stuck: list[dict] = []
+    for state_path in root.glob("*/iterations/*/pipeline_state.yaml"):
+        try:
+            state = _yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("[stuck-detect] failed to read {}: {}", state_path, exc)
+            continue
+
+        active_node_id = state.get("active_node_id")
+        phase = state.get("phase", "")
+        if not active_node_id or phase in _WATCHDOG_TERMINAL_PHASES:
+            continue
+
+        try:
+            mtime = state_path.stat().st_mtime
+        except OSError as exc:
+            logger.warning("[stuck-detect] stat failed for {}: {}", state_path, exc)
+            continue
+        stale_seconds = now - mtime
+        if stale_seconds < PIPELINE_STUCK_THRESHOLD_SECONDS:
+            continue
+
+        iter_dir = state_path.parent
+        project_id = iter_dir.parents[1].name
+        tree_path = iter_dir / "task_tree.yaml"
+        if not tree_path.exists():
+            continue
+
+        try:
+            tree_doc = _yaml.safe_load(tree_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("[stuck-detect] failed to read {}: {}", tree_path, exc)
+            continue
+
+        node = (tree_doc.get("nodes") or {}).get(active_node_id)
+        if not node:
+            continue
+
+        node_status = str(node.get("status", "")).lower()
+        # Resolved-on-disk cases are recover_stalled_pipelines's job —
+        # flagging them here would emit a spurious event that gets
+        # resolved milliseconds later by the replay path.
+        if node_status in (_WATCHDOG_COMPLETED_STATUSES | _WATCHDOG_FAILED_STATUSES):
+            continue
+
+        stuck.append({
+            "project_id": project_id,
+            "current_stage": state.get("current_stage"),
+            "phase": phase,
+            "active_node_id": active_node_id,
+            "stale_seconds": int(stale_seconds),
+        })
+    return stuck
+
+
 def recover_stalled_pipelines(projects_root) -> int:
     """Scan every project iteration under ``projects_root`` for a
     ``pipeline_state.yaml`` whose ``active_node_id`` points at a task tree

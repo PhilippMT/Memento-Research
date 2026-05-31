@@ -653,7 +653,10 @@ async def lifespan(app: FastAPI):
     # walks every project iteration once on startup and replays the
     # missing event into the engine so the pipeline advances itself
     # without a hand-edit of the YAML.
-    from onemancompany.core.pipeline_engine import recover_stalled_pipelines
+    from onemancompany.core.pipeline_engine import (
+        detect_stuck_pipelines,
+        recover_stalled_pipelines,
+    )
     from onemancompany.core.config import PROJECTS_DIR
     try:
         _recovered = recover_stalled_pipelines(PROJECTS_DIR)
@@ -661,6 +664,22 @@ async def lifespan(app: FastAPI):
             print(f"[startup] Pipeline watchdog recovered {_recovered} stalled project(s)")
     except Exception as _exc:
         logger.warning("[startup] pipeline watchdog raised: {}", _exc)
+
+    # Surface pipelines the watchdog could not auto-resolve (producer still
+    # PROCESSING with no state writes for >1 h) so the user sees them and
+    # can intervene rather than discovering the stall hours later.
+    try:
+        from onemancompany.core.events import event_bus
+        from onemancompany.core.models import EventType
+        from onemancompany.core.events import CompanyEvent
+        for _entry in detect_stuck_pipelines(PROJECTS_DIR):
+            print(f"[startup] Pipeline stuck: {_entry}")
+            await event_bus.publish(CompanyEvent(
+                type=EventType.PIPELINE_STUCK,
+                payload=_entry,
+            ))
+    except Exception as _exc:
+        logger.warning("[startup] stuck-pipeline detector raised: {}", _exc)
 
     # Recover projects stuck in pending_confirmation (legacy state from old CEO inbox).
     # Complete the iteration and archive the project.
