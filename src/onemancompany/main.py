@@ -646,6 +646,22 @@ async def lifespan(app: FastAPI):
         print(f"[startup] Restored {restored_count} task(s) from disk — auto-resuming")
         _em.drain_pending()
 
+    # Re-fire missing pipeline events. Issue #82 — a real production stall
+    # left ``pipeline_state.yaml`` pointing at a node that finished hours
+    # earlier on disk; the in-memory ``on_task_complete`` event was lost
+    # to a completion-consumer timeout and nothing re-evaluated. Watchdog
+    # walks every project iteration once on startup and replays the
+    # missing event into the engine so the pipeline advances itself
+    # without a hand-edit of the YAML.
+    from onemancompany.core.pipeline_engine import recover_stalled_pipelines
+    from onemancompany.core.config import PROJECTS_DIR
+    try:
+        _recovered = recover_stalled_pipelines(PROJECTS_DIR)
+        if _recovered:
+            print(f"[startup] Pipeline watchdog recovered {_recovered} stalled project(s)")
+    except Exception as _exc:
+        logger.warning("[startup] pipeline watchdog raised: {}", _exc)
+
     # Recover projects stuck in pending_confirmation (legacy state from old CEO inbox).
     # Complete the iteration and archive the project.
     from onemancompany.core.project_archive import (
