@@ -184,10 +184,19 @@ employee from your own code, set the ContextVar yourself (the
 ## Cost notes
 
 - `store` runs **1 LLM call** per invocation (the memento_v4
-  finalize). Defaults use `AblationFlags(reflect_synthesis=False)`
-  to skip the synthesis pass — keeps cost predictable.
-- `recall` runs **0 LLM calls**. Hybrid retrieval is local
-  (Chroma + BM25 + BFS over the on-disk causal graph).
+  finalize). The tool uses the **combo_v2** ablation config
+  (`classify_memories=False, conflict_detection=False`): an upstream
+  ablation found both net-zero-or-negative on F1 while adding ingest
+  LLM cost (conflict is an O(N²) prompt that also breaks historical /
+  temporal recalls by committing a supersede "winner" before the
+  query is known). Dropping them keeps ingest at exactly 1 LLM call
+  (finalize only).
+- `recall` runs **0 LLM calls by default**. Hybrid retrieval is local
+  (Chroma + BM25 + BFS over the on-disk causal graph). Set
+  `MEMENTO_REFLECT=1` (or `true`/`yes`/`on`) to re-enable recall-time
+  reflect synthesis — the adapter then routes per query (simple
+  factual lookups still skip it; only reasoning / preference queries
+  spend 1 LLM call). Off by default to keep recall on the fast path.
 - Cold-start cost on a fresh memory dir: 1 store finalize.
 - Re-ingest cost: the adapter rebuilds its in-memory index per
   process, so each `recall` call re-ingests the existing sessions
@@ -200,10 +209,14 @@ employee from your own code, set the ContextVar yourself (the
 ## Phase-1 known limitations
 
 - The upstream finalize prompt does not always emit `causal_edges`
-  or `superseded` flags on short transcripts (3-5 turns). Vector +
-  BM25 still find the right session, but ranking does not promote
-  the latest decision over a superseded one. Tracked for an
-  upstream fix.
+  on short transcripts (3-5 turns). Vector + BM25 still find the
+  right session, but cross-session BFS expansion is weaker. Tracked
+  for an upstream fix.
+- `superseded` flags are **deliberately off** under the combo_v2
+  config (`conflict_detection=False`). Ranking does not demote an
+  "older" fact, because demoting it before the query is known breaks
+  historical / temporal recalls (e.g. "where did X *used to* work").
+  Latest-vs-prior ordering is left to vector + BM25 + recency.
 - No automatic on-task hook. The LLM must decide to call `store` /
   `recall`. If you want unconditional recall at task start (the
   pattern OMC's "default memory" uses), wrap the agent with a
@@ -290,11 +303,14 @@ Overall: PASS
 ```
 
 The three strict failures (`q2`, `q3`, `q5`) all depend on the
-memento_v4 supersede sidecar being populated by the upstream
-finalize prompt — currently empty on short corpora, so latest
-decisions don't outrank earlier ones in the ranking. Documented as
-a phase-1 known limitation; vector + BM25 still surface the right
-session in top-3 for every query.
+memento_v4 supersede sidecar promoting the latest decision over
+earlier ones in the ranking. Under the **combo_v2** config the
+supersede sidecar is intentionally never populated
+(`conflict_detection=False`), so this is now expected behavior
+rather than a transient limitation: latest-vs-prior ordering is
+left to vector + BM25 + recency. Re-baseline these three when
+flipping the config — vector + BM25 still surface the right session
+in top-3 for every query.
 
 ### Agentic — `scripts/test_memento_agent*.py` (local only)
 

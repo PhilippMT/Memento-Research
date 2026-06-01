@@ -23,3 +23,7 @@ env_vars:
     label: Finalize Model
     secret: false
     placeholder: gemini-2.5-flash
+  - name: MEMENTO_REFLECT
+    label: Recall Reflect Synthesis (off by default; 1/true to enable)
+    secret: false
+    placeholder: "0"

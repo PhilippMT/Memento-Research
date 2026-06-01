@@ -31,6 +31,35 @@ from memento_v4 import (
 
 _VALID_ROLES = {"user", "assistant"}
 
+_REFLECT_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _reflect_enabled() -> bool:
+    """Whether recall-time reflect synthesis is on.
+
+    combo_v2 ships reflect OFF by default so recall stays a zero-LLM fast
+    path. Set MEMENTO_REFLECT=1 (or true/yes/on) to re-enable it; the
+    adapter then routes per query — simple factual lookups skip reflect and
+    copy verbatim, only reasoning/preference queries spend an LLM call.
+    """
+    return os.environ.get("MEMENTO_REFLECT", "").strip().lower() in _REFLECT_TRUTHY
+
+
+def _combo_v2_flags() -> AblationFlags:
+    """combo_v2 ablation config.
+
+    Drops classify_memories + conflict_detection: ablation found both
+    net-zero-or-negative on F1 while adding ingest LLM cost (conflict is an
+    O(N^2) prompt), and conflict_detection's supersede logic actively breaks
+    historical / temporal recalls (it commits a "winner" before the query is
+    known). reflect_synthesis stays off unless MEMENTO_REFLECT enables it.
+    """
+    return AblationFlags(
+        classify_memories=False,
+        conflict_detection=False,
+        reflect_synthesis=_reflect_enabled(),
+    )
+
 
 def _validate_turns(turns) -> str | None:
     """Return error message string, or None if turns is valid."""
@@ -209,7 +238,7 @@ def store(turns: list[dict]) -> dict:
 
     adapter_kwargs = dict(
         memory_root=mem_root,
-        ablation=AblationFlags(reflect_synthesis=False),
+        ablation=_combo_v2_flags(),
     )
     memento_model = os.environ.get("MEMENTO_MODEL")
     if memento_model:
@@ -275,7 +304,7 @@ def recall(query: str, top_k: int = 5) -> dict:
     adapter_kwargs = dict(
         memory_root=mem_root,
         top_k=retrieve_k,
-        ablation=AblationFlags(reflect_synthesis=False),
+        ablation=_combo_v2_flags(),
     )
     memento_model = os.environ.get("MEMENTO_MODEL")
     if memento_model:

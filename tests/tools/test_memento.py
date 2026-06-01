@@ -183,6 +183,72 @@ def test_isolation_two_employees(employee_root, monkeypatch):
     assert result["session_ids"] == []
 
 
+def test_store_uses_combo_v2_flags(employee_root, fake_vessel, monkeypatch):
+    """store builds the adapter with combo_v2 ablation: classify + conflict
+    off, reflect off by default (no MEMENTO_REFLECT)."""
+    from company.assets.tools.memento import memento as memento_mod
+
+    captured = {}
+
+    class _FakeAdapter:
+        def __init__(self, **kw):
+            captured["ablation"] = kw.get("ablation")
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, conv, conv_id):
+            pass
+
+    monkeypatch.delenv("MEMENTO_REFLECT", raising=False)
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _FakeAdapter)
+
+    with _with_vessel(fake_vessel):
+        memento_mod.store.invoke({"turns": [{"role": "user", "content": "hi"}]})
+
+    flags = captured["ablation"].to_dict()
+    assert flags["classify_memories"] is False
+    assert flags["conflict_detection"] is False
+    assert flags["reflect_synthesis"] is False
+
+
+def test_reflect_env_toggle_enables_reflect(employee_root, fake_vessel, monkeypatch):
+    """MEMENTO_REFLECT=1 flips reflect_synthesis on for recall."""
+    from company.assets.tools.memento import memento as memento_mod
+    from company.assets.tools.memento.memento import RecallContext
+
+    captured = {}
+
+    class _RecallAdapter:
+        def __init__(self, **kw):
+            captured["ablation"] = kw.get("ablation")
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            pass
+
+        async def recall(self, query, conv_id):
+            return RecallContext(raw_text="ctx", session_ids=[], metadata={})
+
+    monkeypatch.setenv("MEMENTO_REFLECT", "1")
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _RecallAdapter)
+
+    # need at least one stored session so recall reaches the adapter
+    sessions_dir = employee_root / "E00006" / "memory" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "001.json").write_text(
+        json.dumps({"session_num": 1, "turns": [{"role": "user", "content": "x"}]}),
+        encoding="utf-8",
+    )
+
+    with _with_vessel(fake_vessel):
+        memento_mod.recall.invoke({"query": "why did this happen"})
+
+    assert captured["ablation"].to_dict()["reflect_synthesis"] is True
+
+
 def test_store_finalize_failure_preserves_transcript(employee_root, fake_vessel, monkeypatch):
     """If finalize raises, the session JSON on disk is still written."""
     from company.assets.tools.memento import memento as memento_mod
