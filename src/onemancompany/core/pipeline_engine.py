@@ -1132,7 +1132,14 @@ class PipelineEngine:
                         stage["id"], self.phase, len(result or ""), retries + 1, MAX_RETRIES,
                     )
                     self._emit_stage_event("stage_failed", stage["id"])
-                    if self.phase in ("producer_b", "producer_b_finalize"):
+                    if self.phase == "producer_b_finalize":
+                        # Stub during finalize: runs are still terminal, we
+                        # just need a written report. Re-dispatch the same
+                        # finalize task (with feedback prepended), NOT the
+                        # initial submit-and-run path — otherwise the
+                        # runner would try to re-submit completed runs.
+                        self._dispatch_producer_b_finalize()
+                    elif self.phase == "producer_b":
                         self._dispatch_producer_b(feedback=feedback)
                     else:
                         self._dispatch_producer(feedback=feedback)
@@ -1389,8 +1396,10 @@ class PipelineEngine:
             self._on_critic_pass(stored, confidence=None)
             return
 
-        if current_phase not in ("producer", "producer_b"):
-            # Should not happen — gate/done/failed phases mean no task is in flight.
+        if current_phase not in ("producer", "producer_b", "producer_b_finalize"):
+            # Should not happen — gate/done/failed/waiting phases mean no
+            # task is in flight (the waiter is driven by run_tracker, not
+            # by a dispatched LLM task).
             logger.warning(
                 "[PIPELINE] on_task_failed called in unexpected phase {} (stage {}); ignoring",
                 current_phase, stage["id"],
@@ -1398,10 +1407,16 @@ class PipelineEngine:
             return
 
         truncated = (result or "(no output)").strip()[:600]
-        # Differentiate 6a vs 6b failures so the retry feedback names the
-        # right sub-phase. A 6b failure (runner) does not retry 6a — the
-        # code is already on disk; only the runner pass is re-tried.
-        if current_phase == "producer_b":
+        # Differentiate 6a vs 6b vs 6b-finalize failures so the retry
+        # feedback + re-dispatch target the right sub-phase.
+        if current_phase == "producer_b_finalize":
+            failure_feedback = (
+                f"Stage 6b FINAL REPORT task failed without producing a deliverable. "
+                f"The submitted runs already reached terminal status — just "
+                f"re-fetch each run_id's evidence via fast_query_exp_status.sh "
+                f"and write the report. Failure context:\n{truncated}"
+            )
+        elif current_phase == "producer_b":
             failure_feedback = (
                 f"Stage 6b runner failed without producing a deliverable. "
                 f"Failure context:\n{truncated}"
@@ -1421,7 +1436,12 @@ class PipelineEngine:
                 stage["id"], current_phase, retries + 1, MAX_RETRIES,
             )
             self._emit_stage_event("stage_failed", stage["id"])
-            if current_phase == "producer_b":
+            if current_phase == "producer_b_finalize":
+                # Finalize failure → re-dispatch the same finalize task,
+                # NOT the initial submit-and-run task. Runs are terminal;
+                # we just need the report.
+                self._dispatch_producer_b_finalize()
+            elif current_phase == "producer_b":
                 self._dispatch_producer_b(feedback=failure_feedback)
             else:
                 self._dispatch_producer(feedback=failure_feedback)
@@ -1575,7 +1595,9 @@ class PipelineEngine:
         # workspace; ``discard_uncommitted_changes`` below scrubs that so
         # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
         # passes.
-        was_mid_flight = self.phase in ("producer", "producer_b", "critic")
+        was_mid_flight = self.phase in (
+            "producer", "producer_b", "producer_b_waiting", "producer_b_finalize", "critic",
+        )
         if was_mid_flight:
             await self._cancel_active_task_and_wait()
 
@@ -1735,6 +1757,37 @@ class PipelineEngine:
     )
 
     @classmethod
+    def _strip_fenced_code_blocks(cls, text: str) -> str:
+        """Replace the content of every triple-backtick fenced code block
+        with whitespace, preserving character offsets so other regexes
+        still align with the original document positions.
+
+        Stage 6b reports embed RESULT_JSON inside a fenced block, and that
+        JSON often has its own ``"run_id": "smoke_seed42"`` field that is
+        the script's internal seed-tag, NOT an infra run_id the engine
+        should wait on. Stripping fences before parsing eliminates that
+        false-positive class without losing the surrounding list-item
+        ``- run_id: run_x`` entries the runner writes outside the fence.
+        """
+        if "```" not in text:
+            return text
+        out = []
+        in_fence = False
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                out.append(line)  # keep the fence delimiter
+                continue
+            if in_fence:
+                # Blank out the line but preserve its length so character
+                # offsets stay valid for the original document.
+                out.append(" " * (len(line) - 1) + ("\n" if line.endswith("\n") else ""))
+            else:
+                out.append(line)
+        return "".join(out)
+
+    @classmethod
     def _parse_runner_report_runs(cls, report: str) -> list[tuple[str, str]]:
         """Extract ``[(run_id, status), ...]`` pairs from a 6b runner report.
 
@@ -1743,19 +1796,24 @@ class PipelineEngine:
         Tolerates the various Markdown decorations the runner uses (e.g.
         backtick-quoted, asterisk-bold, plain ``run_id: run_x`` styles).
 
+        Filters fenced code blocks first so the RESULT_JSON's internal
+        ``run_id`` (the script's seed tag, not an infra job id) is not
+        confused with a real infra run_id.
+
         Returns ``[]`` if no run_ids are found — caller treats this as "no
         runs to wait on" (e.g. budget BLOCKED report with no submitted runs).
         """
         if not report:
             return []
+        scan_text = cls._strip_fenced_code_blocks(report)
         run_id_hits = [
             (m.start(), m.group(1))
-            for m in cls._RUN_ID_RE.finditer(report)
+            for m in cls._RUN_ID_RE.finditer(scan_text)
             if m.group(1).lower() not in {"run_id", "rid", "none", "null", "missing", "n_a", "n/a"}
         ]
         status_hits = [
             (m.start(), m.group(1).lower())
-            for m in cls._STATUS_LINE_RE.finditer(report)
+            for m in cls._STATUS_LINE_RE.finditer(scan_text)
         ]
         if not run_id_hits or not status_hits:
             return []

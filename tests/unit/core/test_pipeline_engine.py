@@ -424,6 +424,40 @@ def test_parse_runner_report_runs_extracts_id_status_pairs():
     ]
 
 
+def test_parse_runner_report_runs_ignores_run_ids_inside_fenced_code():
+    """The runner embeds RESULT_JSON inside a ```json fenced block; its
+    internal ``run_id`` is the script's seed tag (e.g. ``smoke_seed42``)
+    and must NOT be confused with a real infra run_id. Otherwise the
+    engine would wait forever on a synthetic id that run_tracker can
+    never observe in stage_6_runs."""
+    report = """### T1 — Smoke run
+
+- **run_id**: `run_real_infra_id_aa01`
+- **status**: succeeded
+
+**Parsed RESULT_JSON:**
+```json
+{
+  "run_id": "smoke_seed42",
+  "mode": "smoke",
+  "accuracy_direct": 0.667,
+  "status": "still_running"
+}
+```
+
+(end of report)
+"""
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    rids = [rid for rid, _ in pairs]
+    assert "run_real_infra_id_aa01" in rids
+    assert "smoke_seed42" not in rids, (
+        "RESULT_JSON's internal run_id must not be treated as an infra run_id"
+    )
+    # And the JSON's misleading "status: still_running" must not produce
+    # a phantom pending entry attached to the real run_id.
+    assert not pe.PipelineEngine._runs_have_pending(pairs)
+
+
 def test_parse_runner_report_runs_drops_placeholders():
     """``run_id: NOT AVAILABLE``-style placeholders must not produce
     spurious pending runs that would park the pipeline forever."""
@@ -618,6 +652,58 @@ def test_producer_b_finalize_complete_dispatches_critic_and_clears_pending(tmp_p
     assert len(dispatched_critic) == 1
     assert "pending_run_ids" not in engine.state
     assert "pending_waiting_started_at" not in engine.state
+
+
+def test_on_task_failed_in_finalize_redispatches_finalize_not_initial(tmp_path, monkeypatch):
+    """If the LLM task for ``producer_b_finalize`` fails (e.g. transient
+    503), the engine must re-dispatch the FINALIZE path, NOT the initial
+    submit-and-run path — the runs are already terminal; re-submitting
+    them would orphan the originals and double-charge."""
+    initial_dispatches = []
+    finalize_dispatches = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b",
+        lambda self, feedback="": initial_dispatches.append(feedback),
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatches.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"
+    engine.state["pending_run_ids"] = ["run_a"]
+
+    engine.on_task_failed("00025", "node-finalize", "503 Service Unavailable")
+
+    assert finalize_dispatches == [True], "Must re-dispatch finalize, not initial submit"
+    assert initial_dispatches == [], "Must NOT call _dispatch_producer_b (would re-submit)"
+
+
+def test_stub_result_in_finalize_redispatches_finalize_not_initial(tmp_path, monkeypatch):
+    """Same invariant for stub-result retry: a stub during finalize must
+    re-dispatch finalize, not the initial submit task."""
+    initial_dispatches = []
+    finalize_dispatches = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b",
+        lambda self, feedback="": initial_dispatches.append(feedback),
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatches.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"
+    engine.state["pending_run_ids"] = ["run_a"]
+
+    engine.on_task_complete("00025", "node-finalize", "Executed: bash")
+
+    assert finalize_dispatches == [True], "Stub retry in finalize must re-dispatch finalize"
+    assert initial_dispatches == [], "Must NOT call _dispatch_producer_b on finalize stub"
 
 
 def test_producer_b_immediate_terminal_via_state_short_circuits_waiting(tmp_path, monkeypatch):
