@@ -43,6 +43,24 @@ def test_access_guard(u):
     assert u.user_can_access_project("p1/iter_002", "alice") is True  # base-pid keyed
 
 
+@pytest.mark.asyncio
+async def test_resume_breakpoint_rejects_foreign_owner(u, monkeypatch):
+    """The body-keyed /api/pipeline/resume route can't be guarded by the path
+    regex, so it must enforce ownership in-handler: a logged-in user who is not
+    the project owner gets 403 BEFORE any resume work happens."""
+    from fastapi import HTTPException
+    import onemancompany.api.routes as routes
+
+    u.set_project_owner("p1", "alice")
+    # auth_gate.current_user_id reads the JWT; force the caller to be "bob".
+    import onemancompany.api.auth_gate as auth_gate
+    monkeypatch.setattr(auth_gate, "current_user_id", lambda _req: "bob")
+
+    with pytest.raises(HTTPException) as ei:
+        await routes.resume_pipeline_breakpoint({"project_id": "p1", "stage": 3}, request=object())
+    assert ei.value.status_code == 403
+
+
 def test_project_id_from_path():
     from onemancompany.api.auth_gate import _project_id_from_path as f
     assert f("/api/pipeline/abc123/status") == "abc123"
@@ -54,3 +72,14 @@ def test_project_id_from_path():
     assert f("/api/projects/named") == ""
     assert f("/api/bootstrap") == ""
     assert f("/api/me") == ""
+    # /api/pipeline/resume is a REAL body-keyed action route: its project id
+    # lives in the request BODY, so the path regex must NOT capture "resume" as
+    # a pid — else the owner-guard 403s the gate-advance call (the regression
+    # this fix addresses). Ownership for /resume is enforced in-handler instead.
+    assert f("/api/pipeline/resume") == ""
+    # Pure regex-shape negatives: a bare verb segment with no trailing /<sub>
+    # must never be treated as a project id. (These exact paths are not real
+    # routes — the real ones are /api/pipeline/{pid}/revert and
+    # /api/admin/clear-tasks — they only assert the regex requires a sub-path.)
+    assert f("/api/pipeline/revert") == ""
+    assert f("/api/task/clear") == ""

@@ -919,7 +919,7 @@ async def task_followup(project_id: str, body: dict) -> dict:
 
 
 @router.post("/api/pipeline/resume")
-async def resume_pipeline_breakpoint(body: dict):
+async def resume_pipeline_breakpoint(body: dict, request: Request):
     """Resume pipeline after a breakpoint.
 
     Finds the HOLDING parent node with hold_reason 'breakpoint:stage_N'
@@ -935,6 +935,18 @@ async def resume_pipeline_breakpoint(body: dict):
 
     if not project_id:
         raise HTTPException(status_code=400, detail="Missing project_id")
+
+    # Per-user isolation: this is a body-keyed action route, so the auth-gate
+    # path regex (which only sees /api/pipeline/resume, no pid) cannot guard it.
+    # Enforce ownership here instead, mirroring the middleware's check. Returns
+    # True for empty user_id (auth off / localhost automation) — zero regression.
+    from onemancompany.api.auth_gate import current_user_id
+    from onemancompany.core.user_llm import user_can_access_project
+
+    if not user_can_access_project(project_id, current_user_id(request)):
+        raise HTTPException(
+            status_code=403, detail="forbidden: project belongs to another user"
+        )
 
     from onemancompany.core.project_archive import get_project_dir
     pdir = str(get_project_dir(project_id))
