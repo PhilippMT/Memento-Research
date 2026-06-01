@@ -311,6 +311,87 @@ def test_critic_reject_exhausted_waits_for_ceo(tmp_path, monkeypatch):
     assert gate_events == [((1, 0.2), {"exhausted": True})]
 
 
+@pytest.mark.asyncio
+async def test_auto_approve_refuses_exhausted_gate(tmp_path, monkeypatch):
+    """auto_approve=True must NOT advance past a retries-exhausted gate.
+
+    Regression for a failure observed in smoke testing: an upstream LLM
+    error burned 3 retries on Stage 6a, the engine emitted an exhausted
+    gate, and ``_auto_approve_gate`` then called ``on_ceo_approve("")``
+    which advanced ``phase`` to ``done`` with empty ``stage_results``.
+    The correct behavior is to mark ``phase=failed`` so downstream
+    consumers see the project as terminated, not silently completed.
+    """
+    failed_events = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_pipeline_failed",
+        lambda self, stage_id, reason: failed_events.append((stage_id, reason)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["phase"] = "gate"
+    engine.state["auto_approve"] = True
+    advanced = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "on_ceo_approve",
+        lambda self, feedback="": advanced.append(feedback),
+    )
+
+    await engine._auto_approve_gate(stage_id=6, exhausted=True)
+
+    assert advanced == [], "Auto-approve must not call on_ceo_approve when exhausted"
+    assert engine.state["phase"] == "failed"
+    assert engine.state["failure_reason"] == "stage_6_retries_exhausted"
+    assert failed_events == [(6, "retries_exhausted")]
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_still_advances_clean_gate(tmp_path, monkeypatch):
+    """Clean (non-exhausted) gates must still auto-advance under auto_approve."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_failed", lambda self, *a, **kw: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["phase"] = "gate"
+    engine.state["auto_approve"] = True
+    approved = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "on_ceo_approve",
+        lambda self, feedback="": approved.append(feedback),
+    )
+
+    await engine._auto_approve_gate(stage_id=2, exhausted=False)
+
+    assert approved == [""], "Clean gate must still trigger on_ceo_approve"
+    assert engine.state["phase"] == "gate", "Phase stays 'gate' until on_ceo_approve runs"
+    assert "failure_reason" not in engine.state
+
+
+@pytest.mark.asyncio
+async def test_emit_pipeline_failed_publishes_payload(tmp_path, monkeypatch):
+    """``_emit_pipeline_failed`` mirrors ``_emit_pipeline_complete`` and
+    publishes a ``pipeline_failed`` event so frontend / archive consumers
+    can close the project as terminal."""
+    published = []
+
+    async def fake_publish(event):
+        published.append(event)
+
+    monkeypatch.setattr(pe.event_bus, "publish", fake_publish)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["stage_results"] = {"1": "done", "2": "done"}
+    engine._emit_pipeline_failed(stage_id=3, reason="retries_exhausted")
+    await asyncio.sleep(0)
+
+    assert len(published) == 1
+    payload = published[0].payload
+    assert payload["type"] == "pipeline_failed"
+    assert payload["project_id"] == "p1"
+    assert payload["stage"] == 3
+    assert payload["reason"] == "retries_exhausted"
+    assert payload["stages_completed"] == 2
+
+
 def test_dispatch_critic_without_critic_auto_passes(tmp_path, monkeypatch):
     stage_events = []
     gate_events = []

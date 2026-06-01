@@ -1800,16 +1800,58 @@ class PipelineEngine:
             logger.debug("Skipping gate event; no running event loop: {}", exc)
 
     async def _auto_approve_gate(self, stage_id: int, exhausted: bool):
-        """Unattended-mode gate advance: behaves like a CEO clicking approve."""
+        """Unattended-mode gate advance: behaves like a CEO clicking approve
+        on a clean PASS, but **refuses to approve an exhausted-retries gate**.
+
+        Exhausted gates land here when the stage failed all its retries (stub
+        results, hard-gate misses, critic REJECTs, or producer crashes). Those
+        runs have no usable deliverable; advancing would mask the failure as
+        ``phase=done`` with empty ``stage_results``. Mark the pipeline as
+        ``failed`` instead — a human CEO can still POST /api/ceo/approve
+        explicitly to override if they have an out-of-band recovery plan.
+        """
         import asyncio
         await asyncio.sleep(0)  # let the gate event flush first
         if self.phase != "gate":
             return
+        if exhausted:
+            logger.warning(
+                "[PIPELINE] AUTO-APPROVE refused for exhausted gate at stage {} "
+                "— marking pipeline failed (manual /api/ceo/approve still available)",
+                stage_id,
+            )
+            self.state["phase"] = "failed"
+            self.state["failure_reason"] = f"stage_{stage_id}_retries_exhausted"
+            self._save()
+            self._emit_pipeline_failed(stage_id, "retries_exhausted")
+            return
         logger.info(
-            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {} "
-            "(exhausted={})", stage_id, exhausted,
+            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {}",
+            stage_id,
         )
         self.on_ceo_approve("")
+
+    def _emit_pipeline_failed(self, stage_id: int, reason: str):
+        """Mirror of ``_emit_pipeline_complete`` for the failed terminal state.
+
+        Fires when auto-approve refuses an exhausted gate, so frontend /
+        archive consumers see the project closed as failed rather than
+        silently hanging at ``phase=gate``.
+        """
+        import asyncio
+        payload = {
+            "type": "pipeline_failed",
+            "project_id": self.project_id,
+            "stage": stage_id,
+            "reason": reason,
+            "stages_completed": len(self.state.get("stage_results", {})),
+            "pipeline_managed": True,
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._emit_async(payload))
+        except RuntimeError as exc:
+            logger.debug("Skipping pipeline failed event; no running event loop: {}", exc)
 
     def _emit_pipeline_complete(self):
         import asyncio
