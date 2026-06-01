@@ -54,3 +54,8 @@ def test_project_id_from_path():
     assert f("/api/projects/named") == ""
     assert f("/api/bootstrap") == ""
     assert f("/api/me") == ""
+    # action routes whose project id is in the BODY, not the path, must NOT be
+    # matched — else the owner-guard 403s the gate-advance call (regression).
+    assert f("/api/pipeline/resume") == ""
+    assert f("/api/pipeline/revert") == ""
+    assert f("/api/task/clear") == ""

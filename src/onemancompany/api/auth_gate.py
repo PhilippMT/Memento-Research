@@ -144,7 +144,12 @@ async def _do_logout(request):
 # (no id) intentionally don't match — the list endpoints filter by owner instead.
 _PROJ_NAMED_RE = re.compile(r"^/api/projects/named/([^/]+)")
 _PROJ_SUB_RE = re.compile(r"^/api/projects/([^/]+)/")
-_PIPELINE_TASK_RE = re.compile(r"^/api/(?:pipeline|task)/([^/]+)")
+# Require a trailing sub-path so the captured segment is a real project id
+# (e.g. /api/pipeline/{pid}/status), NOT an action route like
+# /api/pipeline/resume whose project id lives in the request BODY. Matching the
+# verb "resume" as a pid made the owner-guard 403 the gate-advance call, so
+# pipelines got stuck at every CEO gate for logged-in users.
+_PIPELINE_TASK_RE = re.compile(r"^/api/(?:pipeline|task)/([^/]+)/")
 
 
 def _project_id_from_path(path: str) -> str:
