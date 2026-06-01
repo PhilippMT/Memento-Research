@@ -425,7 +425,7 @@ class PipelineEngine:
             "end_stage": 9,
             "prior_context": "",
             "stage_assignments": {},  # stage_id (str) → employee_id override
-            "phase": "producer",  # producer | producer_b | critic | gate | done | failed
+            "phase": "producer",  # producer | producer_b | producer_b_waiting | producer_b_finalize | critic | gate | done | failed
             "retries": 0,
             "stage_results": {},
             "critic_result": None,
@@ -1106,7 +1106,7 @@ class PipelineEngine:
 
     def on_task_complete(self, employee_id: str, node_id: str, result: str):
         """Called by vessel when a pipeline-managed task completes."""
-        if self.phase in ("producer", "producer_b"):
+        if self.phase in ("producer", "producer_b", "producer_b_finalize"):
             stage = self._stage_def()
             # Stub-result gate (#60 fix 2): if the producer returned a
             # placeholder like ``"Executed: bash"`` (the agent runtime's
@@ -1132,7 +1132,7 @@ class PipelineEngine:
                         stage["id"], self.phase, len(result or ""), retries + 1, MAX_RETRIES,
                     )
                     self._emit_stage_event("stage_failed", stage["id"])
-                    if self.phase == "producer_b":
+                    if self.phase in ("producer_b", "producer_b_finalize"):
                         self._dispatch_producer_b(feedback=feedback)
                     else:
                         self._dispatch_producer(feedback=feedback)
@@ -1245,12 +1245,60 @@ class PipelineEngine:
             self._dispatch_critic(result)
 
         elif self.phase == "producer_b":
-            # Stage 6b runner finished → store as canonical Stage 6 result,
-            # dispatch critic.
+            # Stage 6b runner finished. Two paths from here:
+            #
+            # Fast path (smoke / short experiments): the runner polled all
+            # submitted runs to terminal inside its own task budget. The
+            # report has no `status: still_running` rows → store result,
+            # dispatch critic immediately (matches pre-#93 behavior).
+            #
+            # Long-running path (#93): the runner submitted real
+            # experiments that exceed its agent-task time budget. The
+            # report carries `status: still_running` for one or more
+            # run_ids. Park in ``producer_b_waiting``; the
+            # ``run_tracker`` cron polls infra every 30 s and triggers
+            # ``on_runs_all_terminal`` when every pending run reaches
+            # terminal. Engine then re-dispatches the runner to write
+            # the FINAL report from the now-terminal run data.
             stage = self._stage_def()
             self.state["stage_results"][str(stage["id"])] = result
+            runs = self._parse_runner_report_runs(result)
+            pending = self._pending_run_ids_from(runs)
+            if pending:
+                from datetime import datetime, timezone
+                self.state["phase"] = "producer_b_waiting"
+                self.state["pending_run_ids"] = pending
+                self.state["pending_waiting_started_at"] = datetime.now(timezone.utc).isoformat()
+                self._save()
+                logger.info(
+                    "[PIPELINE] Stage 6b parked in producer_b_waiting: {} run_ids still active "
+                    "({}). run_tracker will fire on_runs_all_terminal when all reach terminal.",
+                    len(pending), ", ".join(pending[:5]) + ("..." if len(pending) > 5 else ""),
+                )
+                self._emit_stage_event("stage_waiting", stage["id"])
+                # Edge case: run_tracker already updated stage_6_runs before
+                # we got here (e.g. the runner's report was stale by the time
+                # the engine processed it). Check now so we don't wait
+                # uselessly for a poll cycle that has nothing left to do.
+                if self._all_pending_terminal(pending, self.state.get("stage_6_runs", {}) or {}):
+                    self.on_runs_all_terminal()
+                return
             self._save()
             logger.info("[PIPELINE] Stage 6b (runner) complete, dispatching critic")
+            self._emit_stage_event("stage_reviewing", stage["id"])
+            self._dispatch_critic(result)
+
+        elif self.phase == "producer_b_finalize":
+            # Finalization re-dispatch (after producer_b_waiting). The
+            # runner has re-read the now-terminal run metrics and produced
+            # the FINAL stage6_experimentalist.md. Clean up the pending-run
+            # bookkeeping and proceed to critic.
+            stage = self._stage_def()
+            self.state["stage_results"][str(stage["id"])] = result
+            self.state.pop("pending_run_ids", None)
+            self.state.pop("pending_waiting_started_at", None)
+            self._save()
+            logger.info("[PIPELINE] Stage 6b finalize complete, dispatching critic")
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
 
@@ -1657,6 +1705,180 @@ class PipelineEngine:
         ):
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Stage 6b long-running waiter (#93, #97)
+    # ------------------------------------------------------------------
+
+    # Status tokens emitted by the experiment-execution-runbook. Terminal
+    # means the run has a final outcome and the engine can advance to the
+    # critic; pending means the run is still active on infra and the engine
+    # should park itself in ``producer_b_waiting`` until run_tracker flips
+    # all pending runs to terminal.
+    _RUN_TERMINAL_STATUSES = ("succeeded", "failed", "rejected", "blocked", "cancelled")
+    _RUN_PENDING_STATUSES = ("running", "still_running", "queued", "pending", "submitted")
+
+    _RUN_ID_RE = re.compile(
+        # Tolerates Markdown decorations: ``run_id:``, ``**run_id**:``,
+        # ``- **run_id**: `run_x```, etc. The ``\W*?`` between ``id`` and
+        # the colon absorbs trailing ``**``/``\`` markers; the ``[`'\"*]*``
+        # after the colon absorbs leading quote / backtick wrappers.
+        r"run[_\s-]*id\b\W*?[:=]\s*[`'\"*]*([A-Za-z][A-Za-z0-9_.\-]{4,})",
+        re.IGNORECASE,
+    )
+    _STATUS_LINE_RE = re.compile(
+        # Tolerates plain ``status:`` AND decorated ``- **status**:`` forms.
+        # ``\W*?`` (lazy non-word chars) absorbs optional Markdown bold/italic
+        # markers without requiring them.
+        r"^\s*(?:[-*]\s*)?\W*?status\b\W*?[:=]\s*[`'\"*]*([a-z_\-]+)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    @classmethod
+    def _parse_runner_report_runs(cls, report: str) -> list[tuple[str, str]]:
+        """Extract ``[(run_id, status), ...]`` pairs from a 6b runner report.
+
+        Walks the report top-to-bottom and pairs each ``run_id:`` line with
+        the next ``status:`` line that follows it within the same run-block.
+        Tolerates the various Markdown decorations the runner uses (e.g.
+        backtick-quoted, asterisk-bold, plain ``run_id: run_x`` styles).
+
+        Returns ``[]`` if no run_ids are found — caller treats this as "no
+        runs to wait on" (e.g. budget BLOCKED report with no submitted runs).
+        """
+        if not report:
+            return []
+        run_id_hits = [
+            (m.start(), m.group(1))
+            for m in cls._RUN_ID_RE.finditer(report)
+            if m.group(1).lower() not in {"run_id", "rid", "none", "null", "missing", "n_a", "n/a"}
+        ]
+        status_hits = [
+            (m.start(), m.group(1).lower())
+            for m in cls._STATUS_LINE_RE.finditer(report)
+        ]
+        if not run_id_hits or not status_hits:
+            return []
+        seen: set[str] = set()
+        out: list[tuple[str, str]] = []
+        status_idx = 0
+        for offset, rid in run_id_hits:
+            if rid in seen:
+                continue
+            seen.add(rid)
+            while status_idx < len(status_hits) and status_hits[status_idx][0] < offset:
+                status_idx += 1
+            if status_idx >= len(status_hits):
+                break
+            out.append((rid, status_hits[status_idx][1]))
+        return out
+
+    @classmethod
+    def _runs_have_pending(cls, runs: list[tuple[str, str]]) -> bool:
+        """True iff any run in the report is still in a non-terminal state."""
+        return any(status in cls._RUN_PENDING_STATUSES for _rid, status in runs)
+
+    def _pending_run_ids_from(self, runs: list[tuple[str, str]]) -> list[str]:
+        return [rid for rid, status in runs if status in self._RUN_PENDING_STATUSES]
+
+    @classmethod
+    def _all_pending_terminal(cls, pending_run_ids: list[str], stage_6_runs: dict) -> bool:
+        """True iff every entry in ``pending_run_ids`` has a terminal status
+        on the engine's ``stage_6_runs`` map. Empty pending list is treated
+        as "already done" so callers can fall through cleanly.
+        """
+        if not pending_run_ids:
+            return True
+        if not isinstance(stage_6_runs, dict):
+            return False
+        for rid in pending_run_ids:
+            entry = stage_6_runs.get(rid)
+            if not isinstance(entry, dict):
+                return False
+            if entry.get("status") not in cls._RUN_TERMINAL_STATUSES:
+                return False
+        return True
+
+    def on_runs_all_terminal(self) -> None:
+        """Called by ``run_tracker`` (or self-checked on each tick) when every
+        ``pending_run_ids`` entry on this engine has reached a terminal status
+        in ``stage_6_runs``.
+
+        Transitions the engine out of ``producer_b_waiting`` by re-dispatching
+        the runner with a "your runs finished — write the FINAL report"
+        instruction. The runner re-fetches log_tails + metrics via the
+        infra status endpoint and produces a complete experimentalist
+        report, which then flows to the critic via the normal path.
+
+        Idempotent: only acts when ``phase == "producer_b_waiting"``.
+        """
+        if self.phase != "producer_b_waiting":
+            return
+        pending = self.state.get("pending_run_ids") or []
+        logger.info(
+            "[PIPELINE] Stage 6b waiting → finalize: {} run_ids now terminal",
+            len(pending),
+        )
+        self.state["phase"] = "producer_b_finalize"
+        self._save()
+        self._dispatch_producer_b_finalize()
+
+    def _dispatch_producer_b_finalize(self) -> None:
+        """Re-dispatch the experiment runner to write the FINAL Stage 6b
+        report now that all submitted runs have reached terminal status.
+
+        Uses the same employee + skill as the initial 6b dispatch; the
+        runbook reads the ``pending_run_ids`` (carried via task description)
+        and fetches each run's final metrics via ``fast_query_exp_status.sh``.
+        """
+        stage = self._stage_def()
+        if stage["id"] != 6:
+            logger.error(
+                "[PIPELINE] _dispatch_producer_b_finalize called for non-Stage-6 stage {}",
+                stage["id"],
+            )
+            return
+        employee_id = _find_stage_6b_employee()
+        if not employee_id:
+            logger.error("[PIPELINE] No experiment_runner employee for Stage 6b finalize")
+            self.state["phase"] = "failed"
+            self._save()
+            return
+
+        pending = self.state.get("pending_run_ids") or []
+        stage_6_runs = self.state.get("stage_6_runs", {}) or {}
+        digest_lines = []
+        for rid in pending:
+            entry = stage_6_runs.get(rid, {}) if isinstance(stage_6_runs, dict) else {}
+            digest_lines.append(
+                f"  - {rid}: status={entry.get('status','?')} "
+                f"cost={entry.get('actual_cost','?')} "
+                f"finished_at={entry.get('finished_at','?')}"
+            )
+        digest = "\n".join(digest_lines) if digest_lines else "  (no pending run_ids recorded)"
+
+        desc = (
+            "Stage 6b: FINAL REPORT (runs are now terminal)\n\n"
+            "You previously submitted experiments to remote infra and exited "
+            "early so the engine could wait for them. All your runs have now "
+            "reached terminal status. Read each run's final evidence and "
+            "write the FINAL stage6_experimentalist.md.\n\n"
+            f"Pending run_ids (now terminal, snapshot from run_tracker):\n{digest}\n\n"
+            "## REQUIRED FIRST STEP\n"
+            'Call load_skill("experiment-execution-runbook") and jump to '
+            "Step 3 (write the report). For each run_id above, run "
+            "`fast_query_exp_status.sh <run_id>` ONCE to capture the final "
+            "log_tail / actual_cost / metrics, then write the canonical "
+            "stage6_experimentalist.md. Do NOT re-submit; the runs are done.\n\n"
+            "After writing the file, call submit_result() referencing it."
+        )
+
+        self._dispatch_to_employee(employee_id, desc, "Stage 6b: Final Report")
+        emp_name = employee_id
+        configs = load_employee_configs()
+        if employee_id in configs:
+            emp_name = configs[employee_id].name
+        self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
 
     def _parse_critic_pass(self, result: str) -> bool:
         """Parse the critic's PASS/REJECT verdict.

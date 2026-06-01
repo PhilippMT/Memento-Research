@@ -392,6 +392,267 @@ async def test_emit_pipeline_failed_publishes_payload(tmp_path, monkeypatch):
     assert payload["stages_completed"] == 2
 
 
+# ===========================================================================
+# Stage 6b long-running waiter (#93, #97)
+# ===========================================================================
+
+
+def test_parse_runner_report_runs_extracts_id_status_pairs():
+    """The parser handles the runner's various Markdown decorations:
+    bold-bracketed labels, backtick-wrapped ids, plain text."""
+    report = """
+### T1 — Smoke run
+
+- **run_id**: `run_d032e33e194a`
+- **status**: succeeded
+
+### T2 — Long full run
+
+- run_id: run_45aa663ec237
+- status: still_running
+
+### T3 — Stalled
+
+- **run_id**: `run_aa01`
+- status: queued
+"""
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_d032e33e194a", "succeeded"),
+        ("run_45aa663ec237", "still_running"),
+        ("run_aa01", "queued"),
+    ]
+
+
+def test_parse_runner_report_runs_drops_placeholders():
+    """``run_id: NOT AVAILABLE``-style placeholders must not produce
+    spurious pending runs that would park the pipeline forever."""
+    report = (
+        "- run_id: NONE\n"
+        "- status: blocked\n\n"
+        "- run_id: missing\n"
+        "- status: blocked\n\n"
+        "- run_id: real_run_xyz\n"
+        "- status: running\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    rids = [rid for rid, _ in pairs]
+    assert "real_run_xyz" in rids
+    assert all(rid.lower() not in {"none", "missing"} for rid in rids)
+
+
+def test_runs_have_pending_distinguishes_terminal_from_active():
+    assert pe.PipelineEngine._runs_have_pending([("r1", "running")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "still_running")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "queued")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "succeeded")]) is False
+    assert pe.PipelineEngine._runs_have_pending([("r1", "failed")]) is False
+    # Mixed: any pending → True
+    assert pe.PipelineEngine._runs_have_pending(
+        [("r1", "succeeded"), ("r2", "running")]
+    ) is True
+
+
+def test_all_pending_terminal_returns_true_when_every_pending_is_terminal():
+    runs_map = {
+        "r1": {"status": "succeeded"},
+        "r2": {"status": "failed"},
+        "r3": {"status": "blocked"},
+    }
+    assert pe.PipelineEngine._all_pending_terminal(["r1", "r2", "r3"], runs_map) is True
+    assert pe.PipelineEngine._all_pending_terminal([], runs_map) is True  # empty list
+
+
+def test_all_pending_terminal_returns_false_when_any_still_running():
+    runs_map = {
+        "r1": {"status": "succeeded"},
+        "r2": {"status": "running"},
+    }
+    assert pe.PipelineEngine._all_pending_terminal(["r1", "r2"], runs_map) is False
+
+
+def test_all_pending_terminal_returns_false_when_run_missing_from_map():
+    """Defensive: a pending run that hasn't shown up on infra yet (e.g.
+    runner submitted but tracker hasn't polled yet) must NOT be treated
+    as terminal — the engine should keep waiting."""
+    runs_map = {"r1": {"status": "succeeded"}}
+    assert pe.PipelineEngine._all_pending_terminal(["r1", "r2_not_yet"], runs_map) is False
+
+
+def test_producer_b_complete_with_pending_runs_parks_in_waiting(tmp_path, monkeypatch):
+    """When the 6b runner's report carries `status: still_running` for one
+    or more run_ids, the engine must NOT dispatch the critic. Instead it
+    enters ``producer_b_waiting`` with the pending run_ids persisted.
+    Regression for #93 (long experiments REJECTED on 9-min poll budget)."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    report = (
+        "## Tasks\n\n"
+        "- run_id: run_long_a\n"
+        "- status: still_running\n\n"
+        "- run_id: run_long_b\n"
+        "- status: running\n"
+    )
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert dispatched_critic == [], "Critic must not be dispatched with pending runs"
+    assert engine.state["phase"] == "producer_b_waiting"
+    assert engine.state["pending_run_ids"] == ["run_long_a", "run_long_b"]
+    assert "pending_waiting_started_at" in engine.state
+
+
+def test_producer_b_complete_with_all_terminal_dispatches_critic(tmp_path, monkeypatch):
+    """Fast path: when every run in the 6b report is terminal, the engine
+    skips ``producer_b_waiting`` and dispatches the critic immediately
+    (pre-#93 behavior preserved for short experiments)."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    report = (
+        "- **run_id**: `smoke_a`\n"
+        "- **status**: succeeded\n\n"
+        "- **run_id**: `full_b`\n"
+        "- **status**: succeeded\n"
+    )
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert len(dispatched_critic) == 1, "Critic must dispatch when all runs terminal"
+    assert engine.state["phase"] == "producer_b"  # critic dispatch flips it later
+    assert "pending_run_ids" not in engine.state
+
+
+def test_producer_b_complete_with_no_runs_at_all_dispatches_critic(tmp_path, monkeypatch):
+    """Defensive: a blocked/budget-failed runner report with no run_ids at
+    all should NOT park in waiting (no runs to wait on). Critic gets the
+    honest BLOCKED report and decides."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    report = "BLOCKED: session_available=0.00, no runs submitted"
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert len(dispatched_critic) == 1
+    assert "pending_run_ids" not in engine.state
+
+
+def test_on_runs_all_terminal_advances_to_finalize(tmp_path, monkeypatch):
+    """When all pending runs are terminal, on_runs_all_terminal must
+    transition to ``producer_b_finalize`` and re-dispatch the runner."""
+    finalize_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatched.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_waiting"
+    engine.state["pending_run_ids"] = ["run_long_a", "run_long_b"]
+
+    engine.on_runs_all_terminal()
+
+    assert engine.state["phase"] == "producer_b_finalize"
+    assert finalize_dispatched == [True]
+
+
+def test_on_runs_all_terminal_idempotent_outside_waiting_phase(tmp_path, monkeypatch):
+    """Defensive: a duplicate run_tracker callback (e.g. two ticks racing)
+    must not re-dispatch the runner if the engine already advanced."""
+    finalize_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatched.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"  # already advanced
+    engine.state["pending_run_ids"] = ["run_long_a"]
+
+    engine.on_runs_all_terminal()
+
+    assert finalize_dispatched == [], "Must not re-dispatch outside waiting phase"
+
+
+def test_producer_b_finalize_complete_dispatches_critic_and_clears_pending(tmp_path, monkeypatch):
+    """After the runner re-dispatch in finalize mode completes, the engine
+    must dispatch the critic on the final report AND clean up
+    ``pending_run_ids`` from state so a subsequent retry doesn't see
+    stale waiting bookkeeping."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"
+    engine.state["pending_run_ids"] = ["run_long_a"]
+    engine.state["pending_waiting_started_at"] = "2026-06-01T17:00:00Z"
+
+    engine.on_task_complete("00025", "nodeB-final", "## Final report\n\n- run_id: run_long_a\n- status: succeeded")
+
+    assert len(dispatched_critic) == 1
+    assert "pending_run_ids" not in engine.state
+    assert "pending_waiting_started_at" not in engine.state
+
+
+def test_producer_b_immediate_terminal_via_state_short_circuits_waiting(tmp_path, monkeypatch):
+    """If the runner's report says still_running but run_tracker has
+    already marked the runs terminal in stage_6_runs (race between the
+    cron tick and the runner's completion event), the engine must
+    short-circuit straight to finalize instead of waiting for a poll
+    cycle that has nothing left to do."""
+    finalize_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatched.append(True),
+    )
+    # Also stub critic dispatch so we can tell which path was taken
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    # run_tracker already filled in terminal status before we got here
+    engine.state["stage_6_runs"] = {
+        "run_long_a": {"status": "succeeded"},
+    }
+    report = "- run_id: run_long_a\n- status: still_running"
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert finalize_dispatched == [True], "Must short-circuit to finalize, not park"
+    assert dispatched_critic == [], "Must not dispatch critic — finalize will do that"
+
+
 def test_dispatch_critic_without_critic_auto_passes(tmp_path, monkeypatch):
     stage_events = []
     gate_events = []
