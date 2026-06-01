@@ -413,6 +413,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 
 /* Workspace file list */
 .ws-empty{padding:24px 16px;text-align:center;color:var(--text4);font-size:.82rem}
+.ws-folder-head{display:flex;align-items:center;gap:6px;padding:6px 14px;cursor:pointer;user-select:none;font-size:.78rem;color:var(--text2);border-bottom:1px solid var(--border-light)}
+.ws-folder-head:hover{background:var(--bg)}
+.ws-folder-caret{width:10px;display:inline-block;font-size:.6rem;color:var(--text4)}
+.ws-folder-icon{font-size:.7rem}
+.ws-folder-name{font-weight:600;font-family:var(--mono);font-size:.72rem}
 .ws-file{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border-light);cursor:pointer;transition:background .12s;animation:fadeIn .3s ease}
 .ws-file:hover{background:var(--bg)}
 .ws-file:last-child{border-bottom:none}
@@ -1175,39 +1180,86 @@ function _fmtSize(bytes) {
   return (bytes/1024/1024).toFixed(1) + ' MB';
 }
 
-function _renderWorkspace() {
-  const list = document.getElementById('wsFileList');
-  const empty = document.getElementById('wsEmpty');
-  if (_wsFiles.size === 0) { empty.style.display = ''; list.innerHTML = ''; return; }
-  empty.style.display = 'none';
-  list.innerHTML = '';
-  for (const [key, info] of _wsFiles) {
-    // ``key`` is the relative path (e.g. ``stage8_paper/main.pdf``);
-    // show the basename as the headline and the parent dir below it
-    // so the user can disambiguate same-name files at a glance.
-    const basename = info.name || key.split('/').pop();
-    const parentDir = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : '';
-    const [iconText, iconClass] = _fileIcon(basename);
+// Tracks which folders are collapsed in the workspace tree. Folder
+// paths are the keys (e.g. ``upstream/agents``). Defaults to expanded.
+const _wsCollapsed = new Set();
+
+function _buildWorkspaceTree(entries) {
+  // Build a nested {dirs: Map, files: [{name, key, info}]} structure
+  // from the flat ``_wsFiles`` map so we can render the original
+  // folder layout instead of one long flat list.
+  const root = { dirs: new Map(), files: [] };
+  for (const [key, info] of entries) {
+    const parts = key.split('/');
+    const basename = parts.pop();
+    let node = root;
+    for (const part of parts) {
+      if (!node.dirs.has(part)) {
+        node.dirs.set(part, { dirs: new Map(), files: [] });
+      }
+      node = node.dirs.get(part);
+    }
+    node.files.push({ name: basename, key, info });
+  }
+  return root;
+}
+
+function _renderWorkspaceNode(container, node, prefix, depth) {
+  // Folders first, sorted; then files, sorted. Each folder is
+  // collapsible — clicking the header toggles _wsCollapsed.
+  const dirNames = [...node.dirs.keys()].sort();
+  for (const dirName of dirNames) {
+    const dirPath = prefix ? `${prefix}/${dirName}` : dirName;
+    const collapsed = _wsCollapsed.has(dirPath);
+    const folder = document.createElement('div');
+    folder.className = 'ws-folder';
+    folder.style.cssText = `padding-left:${depth * 12}px`;
+    folder.innerHTML = `
+      <div class="ws-folder-head" data-dir="${_escHtml(dirPath)}">
+        <span class="ws-folder-caret">${collapsed ? '▶' : '▼'}</span>
+        <span class="ws-folder-icon">📁</span>
+        <span class="ws-folder-name">${_escHtml(dirName)}</span>
+      </div>`;
+    container.appendChild(folder);
+    folder.querySelector('.ws-folder-head').onclick = () => {
+      if (_wsCollapsed.has(dirPath)) _wsCollapsed.delete(dirPath);
+      else _wsCollapsed.add(dirPath);
+      _renderWorkspace();
+    };
+    if (!collapsed) {
+      _renderWorkspaceNode(container, node.dirs.get(dirName), dirPath, depth + 1);
+    }
+  }
+  const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+  for (const { name, key, info } of files) {
+    const [iconText, iconClass] = _fileIcon(name);
     const badge = info.type === 'create'
       ? '<span class="ws-file-badge new">new</span>'
       : '<span class="ws-file-badge updated">updated</span>';
     const el = document.createElement('div');
     el.className = 'ws-file';
     el.id = 'ws-' + _cssId(key);
-    const dirLabel = parentDir
-      ? `<div class="ws-file-dir" style="font-size:6px;opacity:0.6;">${_escHtml(parentDir)}/</div>`
-      : '';
+    el.style.cssText = `padding-left:${(depth * 12) + 14}px`;
     el.innerHTML = `
       <div class="ws-file-icon ${iconClass}">${iconText}</div>
       <div class="ws-file-info">
-        ${dirLabel}
-        <div class="ws-file-name">${_escHtml(basename)}</div>
+        <div class="ws-file-name">${_escHtml(name)}</div>
         <div class="ws-file-meta"><span>${_fmtSize(info.size)}</span><span>${info.time}</span></div>
       </div>
       ${badge}`;
-    el.onclick = () => _previewFile(basename, info);
-    list.appendChild(el);
+    el.onclick = () => _previewFile(name, info);
+    container.appendChild(el);
   }
+}
+
+function _renderWorkspace() {
+  const list = document.getElementById('wsFileList');
+  const empty = document.getElementById('wsEmpty');
+  if (_wsFiles.size === 0) { empty.style.display = ''; list.innerHTML = ''; return; }
+  empty.style.display = 'none';
+  list.innerHTML = '';
+  const tree = _buildWorkspaceTree(_wsFiles.entries());
+  _renderWorkspaceNode(list, tree, '', 0);
 }
 
 function _escHtml(s) {
