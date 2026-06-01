@@ -6658,3 +6658,77 @@ class TestAiSearchSettings:
         assert result["status"] == "updated"
         assert ("TALENT_MARKET_USE_AI_SEARCH", "true") in calls
         assert not any(key == "TALENT_MARKET_API_KEY" for key, _ in calls)
+
+
+# ---------------------------------------------------------------------------
+# /aigraph reverse proxy — path allowlist + SSRF (no redirect-follow) guards
+# ---------------------------------------------------------------------------
+
+
+class TestAigraphProxy:
+    """The /aigraph proxy forwards only the allowlisted aigraph endpoints to the
+    pinned upstream, and never follows redirects (no SSRF gadget)."""
+
+    @pytest.mark.asyncio
+    async def test_allowed_path_is_proxied(self):
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            content = b'{"nodes": [], "edges": []}'
+            headers = {"content-type": "application/json"}
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                captured["kwargs"] = kw
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                captured["url"] = url
+                return _Resp()
+
+        with patch("httpx.AsyncClient", _FakeClient):
+            app = _make_test_app()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.get("/aigraph/query/graph?topic=cot&run=r1&k=8")
+
+        assert r.status_code == 200
+        # forwarded to the pinned upstream, query string preserved
+        assert captured["url"].endswith("/query/graph?topic=cot&run=r1&k=8")
+        assert "127.0.0.1:8765" in captured["url"]
+        # SSRF guard: the proxy must NOT follow redirects
+        assert captured["kwargs"].get("follow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_disallowed_path_is_rejected_without_upstream_call(self):
+        called = {"hit": False}
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                called["hit"] = True
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                called["hit"] = True
+                return None
+
+        with patch("httpx.AsyncClient", _FakeClient):
+            app = _make_test_app()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                # path traversal / arbitrary endpoint must be refused before any fetch
+                r1 = await c.get("/aigraph/admin")
+                r2 = await c.get("/aigraph/../etc/passwd")
+
+        assert r1.status_code == 404
+        assert r2.status_code == 404
+        assert called["hit"] is False
