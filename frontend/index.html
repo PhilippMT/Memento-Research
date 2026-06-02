@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- Planet/conflict graph: fetch aigraph via the same-origin /aigraph reverse
+     proxy (server-local :8765 isn't reachable from the browser; this avoids
+     lcg-graph.js's 127.0.0.1:8765 default that caused "Failed to fetch"). -->
+<script>window.LCG_GRAPH_BASE = location.origin + "/aigraph";</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AutoResearch — OMC Research Lab v3</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">

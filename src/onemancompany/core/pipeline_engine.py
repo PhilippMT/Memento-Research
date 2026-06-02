@@ -425,7 +425,7 @@ class PipelineEngine:
             "end_stage": 9,
             "prior_context": "",
             "stage_assignments": {},  # stage_id (str) → employee_id override
-            "phase": "producer",  # producer | producer_b | critic | gate | done | failed
+            "phase": "producer",  # producer | producer_b | producer_b_waiting | producer_b_finalize | critic | gate | done | failed
             "retries": 0,
             "stage_results": {},
             "critic_result": None,
@@ -1106,7 +1106,7 @@ class PipelineEngine:
 
     def on_task_complete(self, employee_id: str, node_id: str, result: str):
         """Called by vessel when a pipeline-managed task completes."""
-        if self.phase in ("producer", "producer_b"):
+        if self.phase in ("producer", "producer_b", "producer_b_finalize"):
             stage = self._stage_def()
             # Stub-result gate (#60 fix 2): if the producer returned a
             # placeholder like ``"Executed: bash"`` (the agent runtime's
@@ -1132,7 +1132,14 @@ class PipelineEngine:
                         stage["id"], self.phase, len(result or ""), retries + 1, MAX_RETRIES,
                     )
                     self._emit_stage_event("stage_failed", stage["id"])
-                    if self.phase == "producer_b":
+                    if self.phase == "producer_b_finalize":
+                        # Stub during finalize: runs are still terminal, we
+                        # just need a written report. Re-dispatch the same
+                        # finalize task (with feedback prepended), NOT the
+                        # initial submit-and-run path — otherwise the
+                        # runner would try to re-submit completed runs.
+                        self._dispatch_producer_b_finalize()
+                    elif self.phase == "producer_b":
                         self._dispatch_producer_b(feedback=feedback)
                     else:
                         self._dispatch_producer(feedback=feedback)
@@ -1245,12 +1252,60 @@ class PipelineEngine:
             self._dispatch_critic(result)
 
         elif self.phase == "producer_b":
-            # Stage 6b runner finished → store as canonical Stage 6 result,
-            # dispatch critic.
+            # Stage 6b runner finished. Two paths from here:
+            #
+            # Fast path (smoke / short experiments): the runner polled all
+            # submitted runs to terminal inside its own task budget. The
+            # report has no `status: still_running` rows → store result,
+            # dispatch critic immediately (matches pre-#93 behavior).
+            #
+            # Long-running path (#93): the runner submitted real
+            # experiments that exceed its agent-task time budget. The
+            # report carries `status: still_running` for one or more
+            # run_ids. Park in ``producer_b_waiting``; the
+            # ``run_tracker`` cron polls infra every 30 s and triggers
+            # ``on_runs_all_terminal`` when every pending run reaches
+            # terminal. Engine then re-dispatches the runner to write
+            # the FINAL report from the now-terminal run data.
             stage = self._stage_def()
             self.state["stage_results"][str(stage["id"])] = result
+            runs = self._parse_runner_report_runs(result)
+            pending = self._pending_run_ids_from(runs)
+            if pending:
+                from datetime import datetime, timezone
+                self.state["phase"] = "producer_b_waiting"
+                self.state["pending_run_ids"] = pending
+                self.state["pending_waiting_started_at"] = datetime.now(timezone.utc).isoformat()
+                self._save()
+                logger.info(
+                    "[PIPELINE] Stage 6b parked in producer_b_waiting: {} run_ids still active "
+                    "({}). run_tracker will fire on_runs_all_terminal when all reach terminal.",
+                    len(pending), ", ".join(pending[:5]) + ("..." if len(pending) > 5 else ""),
+                )
+                self._emit_stage_event("stage_waiting", stage["id"])
+                # Edge case: run_tracker already updated stage_6_runs before
+                # we got here (e.g. the runner's report was stale by the time
+                # the engine processed it). Check now so we don't wait
+                # uselessly for a poll cycle that has nothing left to do.
+                if self._all_pending_terminal(pending, self.state.get("stage_6_runs", {}) or {}):
+                    self.on_runs_all_terminal()
+                return
             self._save()
             logger.info("[PIPELINE] Stage 6b (runner) complete, dispatching critic")
+            self._emit_stage_event("stage_reviewing", stage["id"])
+            self._dispatch_critic(result)
+
+        elif self.phase == "producer_b_finalize":
+            # Finalization re-dispatch (after producer_b_waiting). The
+            # runner has re-read the now-terminal run metrics and produced
+            # the FINAL stage6_experimentalist.md. Clean up the pending-run
+            # bookkeeping and proceed to critic.
+            stage = self._stage_def()
+            self.state["stage_results"][str(stage["id"])] = result
+            self.state.pop("pending_run_ids", None)
+            self.state.pop("pending_waiting_started_at", None)
+            self._save()
+            logger.info("[PIPELINE] Stage 6b finalize complete, dispatching critic")
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
 
@@ -1341,8 +1396,10 @@ class PipelineEngine:
             self._on_critic_pass(stored, confidence=None)
             return
 
-        if current_phase not in ("producer", "producer_b"):
-            # Should not happen — gate/done/failed phases mean no task is in flight.
+        if current_phase not in ("producer", "producer_b", "producer_b_finalize"):
+            # Should not happen — gate/done/failed/waiting phases mean no
+            # task is in flight (the waiter is driven by run_tracker, not
+            # by a dispatched LLM task).
             logger.warning(
                 "[PIPELINE] on_task_failed called in unexpected phase {} (stage {}); ignoring",
                 current_phase, stage["id"],
@@ -1350,10 +1407,16 @@ class PipelineEngine:
             return
 
         truncated = (result or "(no output)").strip()[:600]
-        # Differentiate 6a vs 6b failures so the retry feedback names the
-        # right sub-phase. A 6b failure (runner) does not retry 6a — the
-        # code is already on disk; only the runner pass is re-tried.
-        if current_phase == "producer_b":
+        # Differentiate 6a vs 6b vs 6b-finalize failures so the retry
+        # feedback + re-dispatch target the right sub-phase.
+        if current_phase == "producer_b_finalize":
+            failure_feedback = (
+                f"Stage 6b FINAL REPORT task failed without producing a deliverable. "
+                f"The submitted runs already reached terminal status — just "
+                f"re-fetch each run_id's evidence via fast_query_exp_status.sh "
+                f"and write the report. Failure context:\n{truncated}"
+            )
+        elif current_phase == "producer_b":
             failure_feedback = (
                 f"Stage 6b runner failed without producing a deliverable. "
                 f"Failure context:\n{truncated}"
@@ -1373,7 +1436,12 @@ class PipelineEngine:
                 stage["id"], current_phase, retries + 1, MAX_RETRIES,
             )
             self._emit_stage_event("stage_failed", stage["id"])
-            if current_phase == "producer_b":
+            if current_phase == "producer_b_finalize":
+                # Finalize failure → re-dispatch the same finalize task,
+                # NOT the initial submit-and-run task. Runs are terminal;
+                # we just need the report.
+                self._dispatch_producer_b_finalize()
+            elif current_phase == "producer_b":
                 self._dispatch_producer_b(feedback=failure_feedback)
             else:
                 self._dispatch_producer(feedback=failure_feedback)
@@ -1527,7 +1595,9 @@ class PipelineEngine:
         # workspace; ``discard_uncommitted_changes`` below scrubs that so
         # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
         # passes.
-        was_mid_flight = self.phase in ("producer", "producer_b", "critic")
+        was_mid_flight = self.phase in (
+            "producer", "producer_b", "producer_b_waiting", "producer_b_finalize", "critic",
+        )
         if was_mid_flight:
             await self._cancel_active_task_and_wait()
 
@@ -1657,6 +1727,294 @@ class PipelineEngine:
         ):
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Stage 6b long-running waiter (#93, #97)
+    # ------------------------------------------------------------------
+
+    # Status tokens emitted by the experiment-execution-runbook. Terminal
+    # means the run has a final outcome and the engine can advance to the
+    # critic; pending means the run is still active on infra and the engine
+    # should park itself in ``producer_b_waiting`` until run_tracker flips
+    # all pending runs to terminal.
+    _RUN_TERMINAL_STATUSES = ("succeeded", "failed", "rejected", "blocked", "cancelled")
+    _RUN_PENDING_STATUSES = ("running", "still_running", "queued", "pending", "submitted")
+
+    _RUN_ID_RE = re.compile(
+        # Tolerates Markdown decorations: ``run_id:``, ``**run_id**:``,
+        # ``- **run_id**: `run_x```, etc. The ``\W*?`` between ``id`` and
+        # the colon absorbs trailing ``**``/``\`` markers; the ``[`'\"*]*``
+        # after the colon absorbs leading quote / backtick wrappers.
+        r"run[_\s-]*id\b\W*?[:=]\s*[`'\"*]*([A-Za-z][A-Za-z0-9_.\-]{4,})",
+        re.IGNORECASE,
+    )
+    _STATUS_LINE_RE = re.compile(
+        # Tolerates plain ``status:`` AND decorated ``- **status**:`` forms.
+        # ``\W*?`` (lazy non-word chars) absorbs optional Markdown bold/italic
+        # markers without requiring them.
+        r"^\s*(?:[-*]\s*)?\W*?status\b\W*?[:=]\s*[`'\"*]*([a-z_\-]+)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    # Info-strings whose fenced contents are known to embed a synthetic
+    # ``run_id`` field (script seed-tag, not an infra job id). Only fences
+    # with these info-strings get blanked — leaving the rest of the
+    # report's content intact handles whole-report outer fences, unbalanced
+    # fences, and other arbitrary code blocks gracefully.
+    _FENCE_INFO_STRINGS_TO_STRIP = ("json", "result_json", "json5", "jsonc")
+
+    @classmethod
+    def _strip_fenced_code_blocks(cls, text: str) -> str:
+        """Replace the content of JSON-ish fenced code blocks with
+        whitespace, preserving character offsets so other regexes still
+        align with the original document positions.
+
+        Stage 6b reports embed RESULT_JSON inside a `````json`` block,
+        and that JSON often has its own ``\"run_id\": \"smoke_seed42\"`` field
+        — the script's internal seed-tag, NOT an infra run_id the engine
+        should wait on. Targeting only ``json`` / ``RESULT_JSON``
+        info-strings eliminates that false-positive class without blanking
+        arbitrary unrelated fences (e.g. a wholedocument outer fence, a
+        ``bash`` code example, an unbalanced fence that would otherwise
+        consume the rest of the document — all real cases that would
+        wipe legitimate ``- run_id: ...`` entries and silently regress
+        into the #93 \"critic dispatched on no runs\" behavior).
+        """
+        if "```" not in text:
+            return text
+        out = []
+        in_strippable_fence = False
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip()
+            if stripped.startswith("```"):
+                if in_strippable_fence:
+                    # Closing the strippable fence.
+                    in_strippable_fence = False
+                else:
+                    # Opening: check the info-string (text after ```).
+                    info = stripped[3:].strip().lower()
+                    # Strip ``json``, ``RESULT_JSON``, etc.; leave bash,
+                    # python, plain ```, etc. alone.
+                    if info in cls._FENCE_INFO_STRINGS_TO_STRIP or info.startswith("result_json"):
+                        in_strippable_fence = True
+                out.append(line)  # keep the fence delimiter either way
+                continue
+            if in_strippable_fence:
+                # Blank out the line but preserve its length so character
+                # offsets stay valid for the original document.
+                out.append(" " * (len(line) - 1) + ("\n" if line.endswith("\n") else ""))
+            else:
+                out.append(line)
+        return "".join(out)
+
+    @classmethod
+    def _parse_runner_report_runs(cls, report: str) -> list[tuple[str, str]]:
+        """Extract ``[(run_id, status), ...]`` pairs from a 6b runner report.
+
+        Walks the report top-to-bottom and pairs each ``run_id:`` line with
+        the next ``status:`` line that follows it within the same run-block.
+        Tolerates the various Markdown decorations the runner uses (e.g.
+        backtick-quoted, asterisk-bold, plain ``run_id: run_x`` styles).
+
+        Filters fenced code blocks first so the RESULT_JSON's internal
+        ``run_id`` (the script's seed tag, not an infra job id) is not
+        confused with a real infra run_id.
+
+        Returns ``[]`` if no run_ids are found — caller treats this as "no
+        runs to wait on" (e.g. budget BLOCKED report with no submitted runs).
+        """
+        if not report:
+            return []
+        scan_text = cls._strip_fenced_code_blocks(report)
+        run_id_hits = [
+            (m.start(), m.group(1))
+            for m in cls._RUN_ID_RE.finditer(scan_text)
+            if m.group(1).lower() not in {"run_id", "rid", "none", "null", "missing", "n_a", "n/a"}
+        ]
+        status_hits = [
+            (m.start(), m.group(1).lower())
+            for m in cls._STATUS_LINE_RE.finditer(scan_text)
+        ]
+        if not run_id_hits:
+            return []
+        # Bind each run_id to a status that lives **within its block** —
+        # the block is bounded by this run_id's offset on the low side and
+        # the NEXT run_id's offset (or end-of-document) on the high side.
+        # Fail-closed: a run_id with no status in its block is paired with
+        # ``"unknown"``, which the fail-safe ``_runs_have_pending`` will
+        # then treat as pending (engine keeps waiting rather than silently
+        # firing the critic on an unverified run).
+        seen: set[str] = set()
+        out: list[tuple[str, str]] = []
+        for i, (offset, rid) in enumerate(run_id_hits):
+            if rid in seen:
+                continue
+            seen.add(rid)
+            block_end = run_id_hits[i + 1][0] if i + 1 < len(run_id_hits) else len(scan_text)
+            paired_status = "unknown"  # fail-closed default
+            for s_off, s_val in status_hits:
+                if offset < s_off < block_end:
+                    paired_status = s_val
+                    break
+            out.append((rid, paired_status))
+        return out
+
+    @classmethod
+    def _runs_have_pending(cls, runs: list[tuple[str, str]]) -> bool:
+        """True iff any run in the report is still in a non-terminal state.
+
+        **Fail-safe semantics**: a status is considered pending unless it
+        appears in ``_RUN_TERMINAL_STATUSES``. An unknown / free-form
+        status the LLM phrased differently (e.g. ``in_progress``,
+        ``executing``, ``submitted``) is treated as pending so the engine
+        keeps waiting rather than dispatching the critic on a possibly
+        still-running experiment (#93 regression class).
+        """
+        return any(status not in cls._RUN_TERMINAL_STATUSES for _rid, status in runs)
+
+    @classmethod
+    def _pending_run_ids_from(cls, runs: list[tuple[str, str]]) -> list[str]:
+        """Same fail-safe semantics as ``_runs_have_pending``: a run_id is
+        considered pending unless its status is explicitly terminal."""
+        return [rid for rid, status in runs if status not in cls._RUN_TERMINAL_STATUSES]
+
+    @classmethod
+    def _all_pending_terminal(cls, pending_run_ids: list[str], stage_6_runs: dict) -> bool:
+        """True iff every entry in ``pending_run_ids`` has a terminal status
+        on the engine's ``stage_6_runs`` map. Empty pending list is treated
+        as "already done" so callers can fall through cleanly.
+        """
+        if not pending_run_ids:
+            return True
+        if not isinstance(stage_6_runs, dict):
+            return False
+        for rid in pending_run_ids:
+            entry = stage_6_runs.get(rid)
+            if not isinstance(entry, dict):
+                return False
+            if entry.get("status") not in cls._RUN_TERMINAL_STATUSES:
+                return False
+        return True
+
+    def on_runs_wait_timeout(self, wait_seconds: int) -> None:
+        """Called by ``run_tracker`` when a project has been parked in
+        ``producer_b_waiting`` past the configured max-wait deadline
+        without all pending runs reaching terminal status.
+
+        Treat it as a producer failure so the existing exhausted-retries
+        path opens a CEO gate (or, under auto_approve, marks the pipeline
+        failed via the #106 fix). The on-disk ``pending_run_ids`` are
+        preserved for forensics — the CEO can read which runs were
+        still active when the deadline tripped.
+
+        Idempotent: only acts when ``phase == "producer_b_waiting"``.
+        """
+        if self.phase != "producer_b_waiting":
+            return
+        pending = self.state.get("pending_run_ids") or []
+        logger.warning(
+            "[PIPELINE] Stage 6b max-wait timeout ({}s) — {} pending runs still active. "
+            "Marking pipeline failed; CEO can inspect pending_run_ids for forensics.",
+            wait_seconds, len(pending),
+        )
+        stage = self._stage_def()
+        self.state["phase"] = "gate"
+        self.state["failure_reason"] = f"stage_6_waiting_timeout_{wait_seconds}s"
+        self._save()
+        # Same gate-open path the rest of the engine uses on exhaustion.
+        # Under auto_approve, #106's _auto_approve_gate flips this to
+        # phase=failed; under interactive mode, the CEO sees an exhausted
+        # gate with a failure_reason explaining the timeout.
+        self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+
+    def on_runs_all_terminal(self) -> None:
+        """Called by ``run_tracker`` (or self-checked on each tick) when every
+        ``pending_run_ids`` entry on this engine has reached a terminal status
+        in ``stage_6_runs``.
+
+        Transitions the engine out of ``producer_b_waiting`` by re-dispatching
+        the runner with a "your runs finished — write the FINAL report"
+        instruction. The runner re-fetches log_tails + metrics via the
+        infra status endpoint and produces a complete experimentalist
+        report, which then flows to the critic via the normal path.
+
+        Idempotent: only acts when ``phase == "producer_b_waiting"``.
+        """
+        if self.phase != "producer_b_waiting":
+            return
+        pending = self.state.get("pending_run_ids") or []
+        logger.info(
+            "[PIPELINE] Stage 6b waiting → finalize: {} run_ids now terminal",
+            len(pending),
+        )
+        self.state["phase"] = "producer_b_finalize"
+        self._save()
+        self._dispatch_producer_b_finalize()
+
+    def _dispatch_producer_b_finalize(self) -> None:
+        """Re-dispatch the experiment runner to write the FINAL Stage 6b
+        report now that all submitted runs have reached terminal status.
+
+        Uses the same employee + skill as the initial 6b dispatch; the
+        runbook reads the ``pending_run_ids`` (carried via task description)
+        and fetches each run's final metrics via ``fast_query_exp_status.sh``.
+        """
+        stage = self._stage_def()
+        if stage["id"] != 6:
+            logger.error(
+                "[PIPELINE] _dispatch_producer_b_finalize called for non-Stage-6 stage {}",
+                stage["id"],
+            )
+            return
+        employee_id = _find_stage_6b_employee()
+        if not employee_id:
+            logger.error("[PIPELINE] No experiment_runner employee for Stage 6b finalize")
+            self.state["phase"] = "failed"
+            self._save()
+            return
+
+        pending = self.state.get("pending_run_ids") or []
+        stage_6_runs = self.state.get("stage_6_runs", {}) or {}
+        digest_lines = []
+        for rid in pending:
+            entry = stage_6_runs.get(rid, {}) if isinstance(stage_6_runs, dict) else {}
+            digest_lines.append(
+                f"  - {rid}: status={entry.get('status','?')} "
+                f"cost={entry.get('actual_cost','?')} "
+                f"finished_at={entry.get('finished_at','?')}"
+            )
+        digest = "\n".join(digest_lines) if digest_lines else "  (no pending run_ids recorded)"
+
+        desc = (
+            "Stage 6b: FINAL REPORT (runs are now terminal)\n\n"
+            "You previously submitted experiments to remote infra and exited "
+            "early so the engine could wait for them. All your runs have now "
+            "reached terminal status. Read each run's final evidence and "
+            "write the FINAL stage6_experimentalist.md.\n\n"
+            f"Pending run_ids (now terminal, snapshot from run_tracker):\n{digest}\n\n"
+        )
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += (
+                f"Direct guidance from CEO (received during the waiting "
+                f"window — apply this when writing the report):\n{user_feedback}\n\n"
+            )
+        desc += (
+            "## REQUIRED FIRST STEP\n"
+            'Call load_skill("experiment-execution-runbook") and jump to '
+            "Step 3 (write the report). For each run_id above, run "
+            "`fast_query_exp_status.sh <run_id>` ONCE to capture the final "
+            "log_tail / actual_cost / metrics, then write the canonical "
+            "stage6_experimentalist.md. Do NOT re-submit; the runs are done.\n\n"
+            "After writing the file, call submit_result() referencing it."
+        )
+
+        self._dispatch_to_employee(employee_id, desc, "Stage 6b: Final Report")
+        emp_name = employee_id
+        configs = load_employee_configs()
+        if employee_id in configs:
+            emp_name = configs[employee_id].name
+        self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
 
     def _parse_critic_pass(self, result: str) -> bool:
         """Parse the critic's PASS/REJECT verdict.
@@ -1800,16 +2158,58 @@ class PipelineEngine:
             logger.debug("Skipping gate event; no running event loop: {}", exc)
 
     async def _auto_approve_gate(self, stage_id: int, exhausted: bool):
-        """Unattended-mode gate advance: behaves like a CEO clicking approve."""
+        """Unattended-mode gate advance: behaves like a CEO clicking approve
+        on a clean PASS, but **refuses to approve an exhausted-retries gate**.
+
+        Exhausted gates land here when the stage failed all its retries (stub
+        results, hard-gate misses, critic REJECTs, or producer crashes). Those
+        runs have no usable deliverable; advancing would mask the failure as
+        ``phase=done`` with empty ``stage_results``. Mark the pipeline as
+        ``failed`` instead — a human CEO can still POST /api/ceo/approve
+        explicitly to override if they have an out-of-band recovery plan.
+        """
         import asyncio
         await asyncio.sleep(0)  # let the gate event flush first
         if self.phase != "gate":
             return
+        if exhausted:
+            logger.warning(
+                "[PIPELINE] AUTO-APPROVE refused for exhausted gate at stage {} "
+                "— marking pipeline failed (manual /api/ceo/approve still available)",
+                stage_id,
+            )
+            self.state["phase"] = "failed"
+            self.state["failure_reason"] = f"stage_{stage_id}_retries_exhausted"
+            self._save()
+            self._emit_pipeline_failed(stage_id, "retries_exhausted")
+            return
         logger.info(
-            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {} "
-            "(exhausted={})", stage_id, exhausted,
+            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {}",
+            stage_id,
         )
         self.on_ceo_approve("")
+
+    def _emit_pipeline_failed(self, stage_id: int, reason: str):
+        """Mirror of ``_emit_pipeline_complete`` for the failed terminal state.
+
+        Fires when auto-approve refuses an exhausted gate, so frontend /
+        archive consumers see the project closed as failed rather than
+        silently hanging at ``phase=gate``.
+        """
+        import asyncio
+        payload = {
+            "type": "pipeline_failed",
+            "project_id": self.project_id,
+            "stage": stage_id,
+            "reason": reason,
+            "stages_completed": len(self.state.get("stage_results", {})),
+            "pipeline_managed": True,
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._emit_async(payload))
+        except RuntimeError as exc:
+            logger.debug("Skipping pipeline failed event; no running event loop: {}", exc)
 
     def _emit_pipeline_complete(self):
         import asyncio
