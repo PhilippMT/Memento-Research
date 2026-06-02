@@ -706,6 +706,180 @@ def test_stub_result_in_finalize_redispatches_finalize_not_initial(tmp_path, mon
     assert initial_dispatches == [], "Must NOT call _dispatch_producer_b on finalize stub"
 
 
+# ===========================================================================
+# Stage 6b waiter — review feedback regressions (PR #107 review by iamlilAJ)
+# ===========================================================================
+
+
+def test_runs_have_pending_treats_unknown_status_as_pending():
+    """Fail-safe semantics: anything NOT in _RUN_TERMINAL_STATUSES is
+    considered pending. Otherwise an LLM-phrased ``in_progress`` /
+    ``executing`` / typo would fall through to terminal and re-introduce
+    the #93 \"critic dispatched on still-running\" failure mode."""
+    # Known terminal — not pending
+    assert pe.PipelineEngine._runs_have_pending([("r1", "succeeded")]) is False
+    assert pe.PipelineEngine._runs_have_pending([("r1", "failed")]) is False
+    # Known pending — pending
+    assert pe.PipelineEngine._runs_have_pending([("r1", "running")]) is True
+    # Unknown free-form tokens — MUST be treated as pending
+    assert pe.PipelineEngine._runs_have_pending([("r1", "in_progress")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "executing")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "unknown")]) is True
+    # The fail-closed parser uses "unknown" as the no-status-found marker
+    # — make sure that marker is pending so the engine keeps waiting
+    # rather than firing the critic on an unverified run.
+
+
+def test_pending_run_ids_from_uses_fail_safe_semantics():
+    """``_pending_run_ids_from`` must use the same fail-safe semantics
+    as ``_runs_have_pending`` (anything not terminal counts as pending)."""
+    runs = [
+        ("r_term", "succeeded"),
+        ("r_running", "running"),
+        ("r_weird", "in_progress"),
+        ("r_unknown", "unknown"),
+    ]
+    pending = pe.PipelineEngine._pending_run_ids_from(runs)
+    assert "r_term" not in pending
+    assert set(pending) == {"r_running", "r_weird", "r_unknown"}
+
+
+def test_parse_runner_report_pairs_status_within_run_block_not_globally():
+    """Each run_id binds to a status that lives WITHIN its block (between
+    this run_id's offset and the next run_id's offset). A status appearing
+    BEFORE its run_id, or attached to a different run's block, must not
+    leak across.
+
+    Previously the parser walked status_hits in document order and could
+    drop a ``still_running`` status if a sibling block's terminal status
+    came first.
+    """
+    report = (
+        "- run_id: r_first\n"
+        "- status: succeeded\n\n"
+        "- run_id: r_second\n"
+        "- status: still_running\n\n"
+        "- run_id: r_third_no_status\n"
+        "(no status line for this block)\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    by_rid = dict(pairs)
+    assert by_rid["r_first"] == "succeeded"
+    assert by_rid["r_second"] == "still_running", (
+        "r_second's still_running must not be lost — block-bounded pairing required"
+    )
+    # r_third has no status in its block → fail-closed to "unknown"
+    assert by_rid["r_third_no_status"] == "unknown"
+    # And "unknown" makes the run pending under fail-safe semantics
+    assert pe.PipelineEngine._runs_have_pending(pairs) is True
+
+
+def test_strip_fenced_code_blocks_only_targets_json_fences():
+    """A bash / python / unlabelled fence must NOT have its body blanked
+    — otherwise an outer wrap or unbalanced fence would wipe legitimate
+    ``- run_id: ...`` list-item lines, parser sees no runs, critic
+    dispatched on \"no runs\" (a #93 regression class)."""
+    text = (
+        "preamble\n\n"
+        "- run_id: r_real_outside_fence\n"
+        "- status: still_running\n\n"
+        "```bash\n"
+        "RID=\"foobar\"\n"
+        "- run_id: should_not_be_stripped\n"
+        "```\n\n"
+        "```json\n"
+        '{"run_id": "smoke_seed42"}\n'
+        "```\n"
+    )
+    stripped = pe.PipelineEngine._strip_fenced_code_blocks(text)
+    # Bash fence's contents must survive
+    assert "foobar" in stripped, "bash fence content must NOT be blanked"
+    # json fence's contents must be blanked (so synthetic run_id doesn't leak)
+    assert "smoke_seed42" not in stripped, "json fence must be blanked"
+    # Legitimate list-item outside any fence must survive
+    assert "r_real_outside_fence" in stripped
+
+
+def test_strip_fenced_code_blocks_survives_unbalanced_outer_fence():
+    """A whole-report outer fence (no closing triple-backtick) must NOT
+    silently consume the rest of the document — only json info-string
+    fences are blanked, so an unbalanced bash-opening fence just stays
+    as-is."""
+    text = (
+        "```bash\n"  # opening only; never closed
+        "- run_id: r_inside_unbalanced_bash\n"
+        "- status: still_running\n"
+    )
+    stripped = pe.PipelineEngine._strip_fenced_code_blocks(text)
+    # Content must survive — bash info-string is not in the strip list
+    assert "r_inside_unbalanced_bash" in stripped
+
+
+def test_run_tracker_active_phases_includes_producer_b_waiting():
+    """REGRESSION (PR #107 review blocker): if producer_b_waiting is
+    missing from _ACTIVE_PHASES, the cron filters out parked projects,
+    stage_6_runs never refreshes, and on_runs_all_terminal is unreachable
+    — every long-running experiment hangs forever, the exact failure
+    mode this PR exists to fix."""
+    from onemancompany.core import run_tracker
+    assert "producer_b_waiting" in run_tracker._ACTIVE_PHASES
+    assert "producer_b_finalize" in run_tracker._ACTIVE_PHASES
+
+
+def test_should_poll_state_returns_true_for_producer_b_waiting():
+    """Companion to the _ACTIVE_PHASES check: the gate function used by
+    the disk-walker must also let producer_b_waiting through."""
+    from onemancompany.core import run_tracker
+    state = {"current_stage": 6, "phase": "producer_b_waiting"}
+    assert run_tracker._should_poll_state(state) is True
+
+
+def test_on_runs_wait_timeout_opens_exhausted_gate(tmp_path, monkeypatch):
+    """When the engine sits in producer_b_waiting past the max-wait
+    deadline, run_tracker calls on_runs_wait_timeout. The engine must
+    open a gate with exhausted=True (which under auto_approve, via #106,
+    transitions to phase=failed instead of silently advancing)."""
+    gate_events = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_gate_event",
+        lambda self, stage_id, confidence=None, exhausted=False:
+            gate_events.append((stage_id, confidence, exhausted)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_waiting"
+    engine.state["pending_run_ids"] = ["run_hung_a"]
+
+    engine.on_runs_wait_timeout(wait_seconds=12 * 3600)
+
+    assert engine.state["phase"] == "gate"
+    assert engine.state["failure_reason"] == "stage_6_waiting_timeout_43200s"
+    assert gate_events == [(6, None, True)], (
+        "Must open an EXHAUSTED gate (so #106's auto-approve refusal kicks in)"
+    )
+
+
+def test_on_runs_wait_timeout_idempotent_outside_waiting(tmp_path, monkeypatch):
+    """If run_tracker fires the deadline callback after the engine
+    already advanced (race), the call must be a no-op."""
+    gate_events = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_gate_event",
+        lambda self, stage_id, confidence=None, exhausted=False:
+            gate_events.append((stage_id, confidence, exhausted)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"  # already advanced
+
+    engine.on_runs_wait_timeout(wait_seconds=99999)
+
+    assert engine.state["phase"] == "producer_b_finalize", "must not regress phase"
+    assert gate_events == [], "must not emit a duplicate exhausted gate"
+
+
 def test_producer_b_immediate_terminal_via_state_short_circuits_waiting(tmp_path, monkeypatch):
     """If the runner's report says still_running but run_tracker has
     already marked the runs terminal in stage_6_runs (race between the

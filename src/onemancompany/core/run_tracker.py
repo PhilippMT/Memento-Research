@@ -20,29 +20,42 @@ source-of-truth on the OMC side; whenever the runbook submits via
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
 import httpx
 from loguru import logger
 
-# Substring pattern that links an infra run back to an OMC project iteration.
-# The runbook hardcodes ``cd omc/<project_id>/<iter_id>/`` as the prefix to
-# every submitted ``run_command``; this regex captures the (pid, iter) tuple
-# without being sensitive to what comes after the slash.
-_OMC_PATTERN = re.compile(r"omc/([0-9a-f]{12})/(iter_\d+)")
-
 # Pipeline phases during which a project is actively producing Stage 6
-# results and the run-id map should refresh. ``critic`` and ``gate`` are
-# included so the UI can still show final-state runs after producer_b
-# completes. ``done`` runs out of the poll cycle after the 6-hour stale
-# window (see ``_should_poll`` below) to keep load bounded.
-_ACTIVE_PHASES = ("producer", "producer_b", "critic", "gate", "done")
+# results and the run-id map should refresh. ``producer_b_waiting`` and
+# ``producer_b_finalize`` MUST be included: the whole point of the
+# long-running waiter (#93) is for this cron to refresh those projects
+# so the engine can detect "all pending runs terminal" and advance.
+# ``critic`` and ``gate`` are included so the UI can still show final-
+# state runs after producer_b completes. ``done`` runs out of the poll
+# cycle after the 6-hour stale window (see ``_should_poll`` below) to
+# keep load bounded.
+_ACTIVE_PHASES = (
+    "producer",
+    "producer_b",
+    "producer_b_waiting",
+    "producer_b_finalize",
+    "critic",
+    "gate",
+    "done",
+)
 
 # Stale window in seconds after which a ``phase=done`` project stops being
 # polled. 6 hours is generous enough for the UI to render terminal status
 # without burning infra requests forever.
 _STALE_DONE_SECONDS = 6 * 60 * 60
+
+# Max wall-clock the engine will keep a project parked in
+# ``producer_b_waiting`` before surfacing it for CEO intervention. An
+# infra-hung run (queued forever, lost on the cluster, network partition)
+# would otherwise sit silently with no escape hatch. 12 h covers nearly
+# every legitimate experiment (full GSM8K MCTS run on H100 ≈ 6-8 h);
+# anything past that is more likely lost than progressing.
+_STAGE6_WAITING_MAX_SECONDS = 12 * 60 * 60
 
 
 def _list_infra_runs(limit: int = 100) -> list[dict[str, Any]]:
@@ -240,15 +253,35 @@ async def poll_active_projects() -> dict[str, int]:
         )
 
         # Stage 6b long-running waiter (#93, #97): if this project is parked
-        # in producer_b_waiting AND every pending_run_ids entry now has a
-        # terminal status, fire the engine's on_runs_all_terminal callback
-        # to advance to producer_b_finalize. Disk state was already
-        # written above, so an engine restart between this poll and the
-        # next one still observes the terminal state on reconstruction.
-        if eng is not None and state.get("phase") == "producer_b_waiting":
+        # in producer_b_waiting, drive its transition from disk state +
+        # the just-refreshed run map. Three paths:
+        #
+        #   (a) every pending run terminal → call on_runs_all_terminal so
+        #       the engine advances to producer_b_finalize.
+        #   (b) hit the max-wait deadline without all-terminal → escalate
+        #       so the project doesn't park forever on an infra-hung run.
+        #   (c) still waiting; do nothing, the next tick re-checks.
+        #
+        # Engine recovery on server restart: ``get_or_load_pipeline`` is
+        # called below (lazy-load) so a project whose engine was GC'd
+        # before restart still gets driven by this cron. Disk state is
+        # already authoritative; the engine handle here is just for the
+        # in-memory callback.
+        if state.get("phase") == "producer_b_waiting":
             pending = state.get("pending_run_ids") or []
-            from onemancompany.core.pipeline_engine import PipelineEngine
-            if pending and PipelineEngine._all_pending_terminal(pending, updated):
+            from onemancompany.core.pipeline_engine import (
+                PipelineEngine, get_or_load_pipeline,
+            )
+            # Lazy-load the engine if it's not already live (restart recovery).
+            if eng is None:
+                eng = get_or_load_pipeline(pid, str(iter_dir))
+            if eng is None:
+                logger.warning(
+                    "[run_tracker] project {} parked in producer_b_waiting but "
+                    "engine cannot be loaded — skipping transition this tick",
+                    pid,
+                )
+            elif pending and PipelineEngine._all_pending_terminal(pending, updated):
                 try:
                     eng.on_runs_all_terminal()
                 except Exception as exc:  # noqa: BLE001 — must not poison cron
@@ -257,5 +290,24 @@ async def poll_active_projects() -> dict[str, int]:
                         "engine will retry on next disk-walk recovery",
                         pid, exc,
                     )
+            else:
+                # Still waiting → check max-wait deadline so an infra-hung
+                # run doesn't park the project forever.
+                started_iso = state.get("pending_waiting_started_at", "")
+                if started_iso:
+                    from datetime import datetime, timezone
+                    try:
+                        started = datetime.fromisoformat(started_iso.replace("Z", "+00:00"))
+                        wait_seconds = (datetime.now(timezone.utc) - started).total_seconds()
+                    except ValueError:
+                        wait_seconds = 0
+                    if wait_seconds >= _STAGE6_WAITING_MAX_SECONDS:
+                        try:
+                            eng.on_runs_wait_timeout(int(wait_seconds))
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[run_tracker] on_runs_wait_timeout raised for project {}: {}",
+                                pid, exc,
+                            )
 
     return counts

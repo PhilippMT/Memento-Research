@@ -1756,30 +1756,50 @@ class PipelineEngine:
         re.IGNORECASE | re.MULTILINE,
     )
 
+    # Info-strings whose fenced contents are known to embed a synthetic
+    # ``run_id`` field (script seed-tag, not an infra job id). Only fences
+    # with these info-strings get blanked — leaving the rest of the
+    # report's content intact handles whole-report outer fences, unbalanced
+    # fences, and other arbitrary code blocks gracefully.
+    _FENCE_INFO_STRINGS_TO_STRIP = ("json", "result_json", "json5", "jsonc")
+
     @classmethod
     def _strip_fenced_code_blocks(cls, text: str) -> str:
-        """Replace the content of every triple-backtick fenced code block
-        with whitespace, preserving character offsets so other regexes
-        still align with the original document positions.
+        """Replace the content of JSON-ish fenced code blocks with
+        whitespace, preserving character offsets so other regexes still
+        align with the original document positions.
 
-        Stage 6b reports embed RESULT_JSON inside a fenced block, and that
-        JSON often has its own ``"run_id": "smoke_seed42"`` field that is
-        the script's internal seed-tag, NOT an infra run_id the engine
-        should wait on. Stripping fences before parsing eliminates that
-        false-positive class without losing the surrounding list-item
-        ``- run_id: run_x`` entries the runner writes outside the fence.
+        Stage 6b reports embed RESULT_JSON inside a `````json`` block,
+        and that JSON often has its own ``\"run_id\": \"smoke_seed42\"`` field
+        — the script's internal seed-tag, NOT an infra run_id the engine
+        should wait on. Targeting only ``json`` / ``RESULT_JSON``
+        info-strings eliminates that false-positive class without blanking
+        arbitrary unrelated fences (e.g. a wholedocument outer fence, a
+        ``bash`` code example, an unbalanced fence that would otherwise
+        consume the rest of the document — all real cases that would
+        wipe legitimate ``- run_id: ...`` entries and silently regress
+        into the #93 \"critic dispatched on no runs\" behavior).
         """
         if "```" not in text:
             return text
         out = []
-        in_fence = False
+        in_strippable_fence = False
         for line in text.splitlines(keepends=True):
             stripped = line.lstrip()
             if stripped.startswith("```"):
-                in_fence = not in_fence
-                out.append(line)  # keep the fence delimiter
+                if in_strippable_fence:
+                    # Closing the strippable fence.
+                    in_strippable_fence = False
+                else:
+                    # Opening: check the info-string (text after ```).
+                    info = stripped[3:].strip().lower()
+                    # Strip ``json``, ``RESULT_JSON``, etc.; leave bash,
+                    # python, plain ```, etc. alone.
+                    if info in cls._FENCE_INFO_STRINGS_TO_STRIP or info.startswith("result_json"):
+                        in_strippable_fence = True
+                out.append(line)  # keep the fence delimiter either way
                 continue
-            if in_fence:
+            if in_strippable_fence:
                 # Blank out the line but preserve its length so character
                 # offsets stay valid for the original document.
                 out.append(" " * (len(line) - 1) + ("\n" if line.endswith("\n") else ""))
@@ -1815,29 +1835,48 @@ class PipelineEngine:
             (m.start(), m.group(1).lower())
             for m in cls._STATUS_LINE_RE.finditer(scan_text)
         ]
-        if not run_id_hits or not status_hits:
+        if not run_id_hits:
             return []
+        # Bind each run_id to a status that lives **within its block** —
+        # the block is bounded by this run_id's offset on the low side and
+        # the NEXT run_id's offset (or end-of-document) on the high side.
+        # Fail-closed: a run_id with no status in its block is paired with
+        # ``"unknown"``, which the fail-safe ``_runs_have_pending`` will
+        # then treat as pending (engine keeps waiting rather than silently
+        # firing the critic on an unverified run).
         seen: set[str] = set()
         out: list[tuple[str, str]] = []
-        status_idx = 0
-        for offset, rid in run_id_hits:
+        for i, (offset, rid) in enumerate(run_id_hits):
             if rid in seen:
                 continue
             seen.add(rid)
-            while status_idx < len(status_hits) and status_hits[status_idx][0] < offset:
-                status_idx += 1
-            if status_idx >= len(status_hits):
-                break
-            out.append((rid, status_hits[status_idx][1]))
+            block_end = run_id_hits[i + 1][0] if i + 1 < len(run_id_hits) else len(scan_text)
+            paired_status = "unknown"  # fail-closed default
+            for s_off, s_val in status_hits:
+                if offset < s_off < block_end:
+                    paired_status = s_val
+                    break
+            out.append((rid, paired_status))
         return out
 
     @classmethod
     def _runs_have_pending(cls, runs: list[tuple[str, str]]) -> bool:
-        """True iff any run in the report is still in a non-terminal state."""
-        return any(status in cls._RUN_PENDING_STATUSES for _rid, status in runs)
+        """True iff any run in the report is still in a non-terminal state.
 
-    def _pending_run_ids_from(self, runs: list[tuple[str, str]]) -> list[str]:
-        return [rid for rid, status in runs if status in self._RUN_PENDING_STATUSES]
+        **Fail-safe semantics**: a status is considered pending unless it
+        appears in ``_RUN_TERMINAL_STATUSES``. An unknown / free-form
+        status the LLM phrased differently (e.g. ``in_progress``,
+        ``executing``, ``submitted``) is treated as pending so the engine
+        keeps waiting rather than dispatching the critic on a possibly
+        still-running experiment (#93 regression class).
+        """
+        return any(status not in cls._RUN_TERMINAL_STATUSES for _rid, status in runs)
+
+    @classmethod
+    def _pending_run_ids_from(cls, runs: list[tuple[str, str]]) -> list[str]:
+        """Same fail-safe semantics as ``_runs_have_pending``: a run_id is
+        considered pending unless its status is explicitly terminal."""
+        return [rid for rid, status in runs if status not in cls._RUN_TERMINAL_STATUSES]
 
     @classmethod
     def _all_pending_terminal(cls, pending_run_ids: list[str], stage_6_runs: dict) -> bool:
@@ -1856,6 +1895,37 @@ class PipelineEngine:
             if entry.get("status") not in cls._RUN_TERMINAL_STATUSES:
                 return False
         return True
+
+    def on_runs_wait_timeout(self, wait_seconds: int) -> None:
+        """Called by ``run_tracker`` when a project has been parked in
+        ``producer_b_waiting`` past the configured max-wait deadline
+        without all pending runs reaching terminal status.
+
+        Treat it as a producer failure so the existing exhausted-retries
+        path opens a CEO gate (or, under auto_approve, marks the pipeline
+        failed via the #106 fix). The on-disk ``pending_run_ids`` are
+        preserved for forensics — the CEO can read which runs were
+        still active when the deadline tripped.
+
+        Idempotent: only acts when ``phase == "producer_b_waiting"``.
+        """
+        if self.phase != "producer_b_waiting":
+            return
+        pending = self.state.get("pending_run_ids") or []
+        logger.warning(
+            "[PIPELINE] Stage 6b max-wait timeout ({}s) — {} pending runs still active. "
+            "Marking pipeline failed; CEO can inspect pending_run_ids for forensics.",
+            wait_seconds, len(pending),
+        )
+        stage = self._stage_def()
+        self.state["phase"] = "gate"
+        self.state["failure_reason"] = f"stage_6_waiting_timeout_{wait_seconds}s"
+        self._save()
+        # Same gate-open path the rest of the engine uses on exhaustion.
+        # Under auto_approve, #106's _auto_approve_gate flips this to
+        # phase=failed; under interactive mode, the CEO sees an exhausted
+        # gate with a failure_reason explaining the timeout.
+        self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
 
     def on_runs_all_terminal(self) -> None:
         """Called by ``run_tracker`` (or self-checked on each tick) when every
@@ -1922,6 +1992,14 @@ class PipelineEngine:
             "reached terminal status. Read each run's final evidence and "
             "write the FINAL stage6_experimentalist.md.\n\n"
             f"Pending run_ids (now terminal, snapshot from run_tracker):\n{digest}\n\n"
+        )
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += (
+                f"Direct guidance from CEO (received during the waiting "
+                f"window — apply this when writing the report):\n{user_feedback}\n\n"
+            )
+        desc += (
             "## REQUIRED FIRST STEP\n"
             'Call load_skill("experiment-execution-runbook") and jump to '
             "Step 3 (write the report). For each run_id above, run "
